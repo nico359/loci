@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Loci
+Exec=loci
+Icon=io.github.nico359.loci
+Terminal=false
+Type=Application
+Categories=Utility;
+Keywords=GTK;
+StartupNotify=true
+DBusActivatable=true

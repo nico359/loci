@@ -1,0 +1,6 @@
+# List of source files containing translatable strings.
+# Please keep this file sorted alphabetically.
+data/io.github.nico359.loci.desktop.in
+data/io.github.nico359.loci.metainfo.xml.in
+data/io.github.nico359.loci.gschema.xml
+src/window.ui
