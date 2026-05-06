@@ -1,0 +1,22 @@
+/* Location dot: a filled blue circle with a white border */
+.location-dot {
+  border-radius: 50%;
+  background-color: #3584e4;
+  border: 3px solid white;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+
+/* Search bar and nav banner: opaque, theme-aware overlays above the map.
+ * @window_bg_color / @window_fg_color are defined by Adwaita and adapt to
+ * dark/light mode while always being fully opaque. */
+.map-search-bar,
+.nav-banner {
+  background-color: @window_bg_color;
+  color: @window_fg_color;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+}
+
+.map-search-bar {
+  padding: 4px;
+}

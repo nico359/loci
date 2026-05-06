@@ -20,6 +20,9 @@
 
 mod application;
 mod config;
+mod geocoding;
+mod location;
+mod routing;
 mod window;
 
 use self::application::LociApplication;

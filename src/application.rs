@@ -21,7 +21,7 @@
 use gettextrs::gettext;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
 use crate::config::VERSION;
 use crate::LociWindow;
@@ -49,6 +49,18 @@ mod imp {
     }
 
     impl ApplicationImpl for LociApplication {
+        fn startup(&self) {
+            self.parent_startup();
+            // Load stylesheet after GTK is initialized
+            let provider = gtk::CssProvider::new();
+            provider.load_from_resource("/io/github/nico359/loci/style.css");
+            gtk::style_context_add_provider_for_display(
+                &gdk::Display::default().expect("no display"),
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
         // We connect to the activate callback to create a window when the application
         // has been launched. Additionally, this callback notifies us when the user
         // tries to launch a "second instance" of the application. When they try

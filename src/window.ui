@@ -2,17 +2,40 @@
 <interface>
   <requires lib="gtk" version="4.0"/>
   <requires lib="Adw" version="1.0"/>
+  <requires lib="Shumate" version="1.0"/>
   <template class="LociWindow" parent="AdwApplicationWindow">
     <property name="title" translatable="yes">Loci</property>
-    <property name="default-width">800</property>
-    <property name="default-height">600</property>
+    <property name="default-width">480</property>
+    <property name="default-height">800</property>
+    <!-- Map fills the whole window; overlays sit on top -->
     <property name="content">
-      <object class="AdwToolbarView">
-        <child type="top">
-          <object class="AdwHeaderBar">
-            <child type="end">
-              <object class="GtkMenuButton">
-                <property name="primary">True</property>
+      <object class="GtkOverlay" id="overlay">
+        <property name="child">
+          <object class="ShumateSimpleMap" id="map">
+          </object>
+        </property>
+        <!-- Floating search bar at the top -->
+        <child type="overlay">
+          <object class="GtkBox" id="search_bar_box">
+            <property name="orientation">horizontal</property>
+            <property name="margin-top">12</property>
+            <property name="margin-start">12</property>
+            <property name="margin-end">12</property>
+            <property name="valign">start</property>
+            <property name="halign">fill</property>
+            <property name="spacing">8</property>
+            <style>
+              <class name="map-search-bar"/>
+              <class name="linked"/>
+            </style>
+            <child>
+              <object class="GtkSearchEntry" id="search_entry">
+                <property name="hexpand">True</property>
+                <property name="placeholder-text" translatable="yes">Search places…</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkMenuButton" id="menu_button">
                 <property name="icon-name">open-menu-symbolic</property>
                 <property name="tooltip-text" translatable="yes">Main Menu</property>
                 <property name="menu-model">primary_menu</property>
@@ -20,23 +43,101 @@
             </child>
           </object>
         </child>
-        <property name="content">
-          <object class="GtkLabel" id="label">
-            <property name="label" translatable="yes">Hello, World!</property>
+        <!-- Attribution label at the bottom right (required by OSM tile usage policy) -->
+        <child type="overlay">
+          <object class="GtkLabel" id="attribution_label">
+            <property name="label">© OpenStreetMap contributors</property>
+            <property name="valign">end</property>
+            <property name="halign">end</property>
+            <property name="margin-bottom">8</property>
+            <property name="margin-end">8</property>
             <style>
-              <class name="title-1"/>
+              <class name="caption"/>
+              <class name="osd"/>
             </style>
           </object>
-        </property>
+        </child>
+        <!-- Navigation banner: slides up from bottom during active navigation -->
+        <child type="overlay">
+          <object class="GtkRevealer" id="nav_banner_revealer">
+            <property name="reveal-child">false</property>
+            <property name="transition-type">slide-up</property>
+            <property name="valign">end</property>
+            <property name="halign">fill</property>
+            <property name="margin-bottom">80</property>
+            <property name="margin-start">16</property>
+            <property name="margin-end">16</property>
+            <child>
+              <object class="GtkBox" id="nav_banner">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">12</property>
+                <style>
+                  <class name="nav-banner"/>
+                </style>
+                <child>
+                  <object class="GtkImage" id="nav_maneuver_icon">
+                    <property name="icon-name">go-up-symbolic</property>
+                    <property name="pixel-size">32</property>
+                    <property name="margin-start">12</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">vertical</property>
+                    <property name="hexpand">true</property>
+                    <property name="margin-top">12</property>
+                    <property name="margin-bottom">12</property>
+                    <property name="valign">center</property>
+                    <child>
+                      <object class="GtkLabel" id="nav_instruction_label">
+                        <property name="label">Starting navigation…</property>
+                        <property name="xalign">0.0</property>
+                        <property name="wrap">true</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="nav_distance_label">
+                        <property name="label"></property>
+                        <property name="xalign">0.0</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="nav_stop_button">
+                    <property name="icon-name">media-playback-stop-symbolic</property>
+                    <property name="tooltip-text" translatable="yes">Stop Navigation</property>
+                    <property name="valign">center</property>
+                    <property name="margin-end">8</property>
+                    <style>
+                      <class name="flat"/>
+                      <class name="circular"/>
+                    </style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child type="overlay">
+          <object class="GtkButton" id="location_button">
+            <property name="icon-name">find-location-symbolic</property>
+            <property name="tooltip-text" translatable="yes">My Location</property>
+            <property name="valign">end</property>
+            <property name="halign">end</property>
+            <property name="margin-bottom">48</property>
+            <property name="margin-end">16</property>
+            <style>
+              <class name="circular"/>
+              <class name="osd"/>
+            </style>
+          </object>
+        </child>
       </object>
     </property>
   </template>
   <menu id="primary_menu">
     <section>
-      <item>
-        <attribute name="label" translatable="yes">_Preferences</attribute>
-        <attribute name="action">app.preferences</attribute>
-      </item>
       <item>
         <attribute name="label" translatable="yes">_Keyboard Shortcuts</attribute>
         <attribute name="action">app.shortcuts</attribute>
