@@ -17,6 +17,15 @@
   box-shadow: 0 2px 10px rgba(0,0,0,0.35);
 }
 
+/* Navigation mode: 3D chase-camera tilt.
+ * Rotates the map widget around its lower edge to give a perspective look.
+ * The viewport bearing is set separately via shumate::Viewport::set_rotation().
+ *
+ * NOTE: CSS perspective tilt is disabled — shumate only renders tiles within
+ * its 2D widget bounds so the "far" part of the tilt goes black. The map
+ * rotation (bearing-up) is handled via Viewport::set_rotation() instead. */
+/* .navigation-tilt { ... } */
+
 .map-search-bar {
   padding: 4px;
 }

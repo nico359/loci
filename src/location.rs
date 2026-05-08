@@ -51,16 +51,19 @@ pub async fn get_location() -> Option<(f64, f64)> {
 }
 
 /// Stream continuous location updates via the XDG Location portal.
-/// Sends each fix as `(lat, lon)` over `tx` until the receiver is dropped.
+/// Sends each fix as `(lat, lon, Option<heading_deg>)` over `tx` until the
+/// receiver is dropped.  Heading is clockwise degrees from north (0 = north,
+/// 90 = east) or `None` when the portal reports it as unavailable.
 /// Async — run inside a tokio runtime.
-pub async fn stream_location(tx: std::sync::mpsc::Sender<(f64, f64)>) {
+pub async fn stream_location(tx: std::sync::mpsc::Sender<(f64, f64, Option<f64>)>) {
     match open_location_stream().await {
         Err(e) => eprintln!("[location] portal error: {e}"),
         Ok((_proxy, mut stream)) => {
             while let Some(location) = stream.next().await {
-                eprintln!("[location] fix: {:.5}, {:.5}  acc={}m",
-                    location.latitude(), location.longitude(), location.accuracy());
-                if tx.send((location.latitude(), location.longitude())).is_err() {
+                eprintln!("[location] fix: {:.5}, {:.5}  acc={}m  heading={:?}",
+                    location.latitude(), location.longitude(), location.accuracy(),
+                    location.heading());
+                if tx.send((location.latitude(), location.longitude(), location.heading())).is_err() {
                     break;
                 }
             }

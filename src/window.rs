@@ -79,6 +79,10 @@ mod imp {
         // Navigation state shared between the GPS thread and the main loop timer
         pub nav_controller: RefCell<Option<std::sync::Arc<ferrostar::navigation_controller::NavigationController>>>,
         pub nav_state: std::sync::Arc<std::sync::Mutex<Option<ferrostar::navigation_controller::models::NavState>>>,
+        // Last known position used to compute bearing when GPS heading is unavailable
+        pub last_nav_pos: RefCell<Option<(f64, f64)>>,
+        // Smoothed heading in degrees (for stable map rotation)
+        pub smoothed_heading: RefCell<Option<f64>>,
     }
 
     #[glib::object_subclass]
@@ -485,9 +489,14 @@ impl LociWindow {
         imp.nav_banner_revealer.set_reveal_child(true);
         Self::update_nav_banner(imp, &first_state);
 
+        // Apply chase-camera 3D tilt
+        imp.map.add_css_class("navigation-tilt");
+        *imp.last_nav_pos.borrow_mut() = None;
+        *imp.smoothed_heading.borrow_mut() = None;
+
         // Spawn GPS streaming thread — feeds location into the navigation controller
         let nav_state = imp.nav_state.clone();
-        let (loc_tx, loc_rx) = std::sync::mpsc::channel::<(f64, f64)>();
+        let (loc_tx, loc_rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>)>();
         let loc_rx = Arc::new(Mutex::new(loc_rx));
 
         // GPS thread
@@ -504,12 +513,12 @@ impl LociWindow {
             let loc_rx = loc_rx.clone();
             move || {
                 // Drain all pending location fixes (use the latest one)
-                let mut latest: Option<(f64, f64)> = None;
+                let mut latest: Option<(f64, f64, Option<f64>)> = None;
                 while let Ok(fix) = loc_rx.lock().unwrap().try_recv() {
                     latest = Some(fix);
                 }
 
-                let Some((lat, lon)) = latest else {
+                let Some((lat, lon, gps_heading)) = latest else {
                     return glib::ControlFlow::Continue;
                 };
 
@@ -518,12 +527,24 @@ impl LociWindow {
                 };
 
                 use ferrostar::navigation_controller::Navigator;
-                use ferrostar::models::{GeographicCoordinate, UserLocation};
+                use ferrostar::models::{CourseOverGround, GeographicCoordinate, UserLocation};
+
+                // Build course_over_ground from GPS heading, or compute from position delta
+                let imp = window.imp();
+                let course = gps_heading
+                    .map(|h| CourseOverGround::new(h, None))
+                    .or_else(|| {
+                        let prev = imp.last_nav_pos.borrow().clone();
+                        prev.map(|(prev_lat, prev_lon)| {
+                            let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
+                            CourseOverGround::new(bearing, None)
+                        })
+                    });
 
                 let user_location = UserLocation {
                     coordinates: GeographicCoordinate { lat, lng: lon },
                     horizontal_accuracy: 10.0,
-                    course_over_ground: None,
+                    course_over_ground: course,
                     timestamp: std::time::SystemTime::now(),
                     speed: None,
                 };
@@ -537,10 +558,10 @@ impl LociWindow {
                     updated
                 };
 
-                let imp = window.imp();
-
                 // Update location dot
                 *imp.current_location.borrow_mut() = Some((lat, lon));
+                *imp.last_nav_pos.borrow_mut() = Some((lat, lon));
+
                 let loc_layer = imp.location_layer.borrow().clone();
                 if let Some(layer) = loc_layer {
                     layer.remove_all();
@@ -552,13 +573,30 @@ impl LociWindow {
                     layer.add_marker(&marker);
                 };
 
-                // Pan map to follow user
-                if let Some(viewport) = imp.map.viewport() {
+                // Pan map and rotate to face direction of travel
+                use ferrostar::navigation_controller::models::TripState;
+                if let TripState::Navigating { snapped_user_location, .. } = new_state.trip_state() {
+                    if let Some(cog) = snapped_user_location.course_over_ground {
+                        let heading_deg = cog.degrees as f64;
+                        // Smooth the heading using angle-aware IIR filter
+                        let smoothed = {
+                            let prev = imp.smoothed_heading.borrow().unwrap_or(heading_deg);
+                            smooth_angle(prev, heading_deg, 0.15)
+                        };
+                        *imp.smoothed_heading.borrow_mut() = Some(smoothed);
+
+                        if let Some(viewport) = imp.map.viewport() {
+                            viewport.set_location(lat, lon);
+                            viewport.set_rotation(smoothed.to_radians());
+                        }
+                    } else if let Some(viewport) = imp.map.viewport() {
+                        viewport.set_location(lat, lon);
+                    }
+                } else if let Some(viewport) = imp.map.viewport() {
                     viewport.set_location(lat, lon);
                 }
 
                 // Update banner from trip state
-                use ferrostar::navigation_controller::models::TripState;
                 if matches!(new_state.trip_state(), TripState::Complete { .. }) {
                     imp.nav_instruction_label.set_text("You have arrived!");
                     imp.nav_distance_label.set_text("");
@@ -628,6 +666,13 @@ impl LociWindow {
         *imp.nav_state.lock().unwrap() = None;
         *imp.pending_route.borrow_mut() = None;
         *imp.pending_origin.borrow_mut() = None;
+        *imp.last_nav_pos.borrow_mut() = None;
+        *imp.smoothed_heading.borrow_mut() = None;
+        // Remove 3D tilt and reset map bearing to north
+        imp.map.remove_css_class("navigation-tilt");
+        if let Some(viewport) = imp.map.viewport() {
+            viewport.set_rotation(0.0);
+        }
         // Clear route layer and marker
         let layer_opt = imp.route_layer.borrow().clone();
         if let Some(layer) = layer_opt { layer.remove_all(); }
@@ -663,7 +708,7 @@ impl LociWindow {
     fn setup_location(&self) {
         let imp = self.imp();
 
-        let (tx, rx) = std::sync::mpsc::channel::<(f64, f64)>();
+        let (tx, rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>)>();
         let rx = Arc::new(Mutex::new(rx));
 
         // Start streaming location continuously in the background.
@@ -707,7 +752,7 @@ impl LociWindow {
                 while let Ok(fix) = rx.lock().unwrap().try_recv() {
                     latest = Some(fix);
                 }
-                let Some((lat, lon)) = latest else {
+                let Some((lat, lon, _heading)) = latest else {
                     return glib::ControlFlow::Continue;
                 };
                 let Some(window) = window_weak.upgrade() else {
@@ -786,4 +831,25 @@ fn format_duration(seconds: f64) -> String {
     } else {
         format!("{} min", mins)
     }
+}
+
+/// Great-circle bearing from point 1 → point 2, in clockwise degrees from north [0, 360).
+fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let lat1r = lat1.to_radians();
+    let lat2r = lat2.to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let y = dlon.sin() * lat2r.cos();
+    let x = lat1r.cos() * lat2r.sin() - lat1r.sin() * lat2r.cos() * dlon.cos();
+    let bearing = y.atan2(x).to_degrees();
+    (bearing + 360.0) % 360.0
+}
+
+/// Exponential smoothing for an angle in degrees, handling the 0/360 wrap-around.
+fn smooth_angle(prev: f64, target: f64, alpha: f64) -> f64 {
+    // Compute shortest angular delta
+    let mut delta = target - prev;
+    if delta > 180.0 { delta -= 360.0; }
+    if delta < -180.0 { delta += 360.0; }
+    let result = prev + alpha * delta;
+    (result + 360.0) % 360.0
 }
