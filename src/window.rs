@@ -83,6 +83,8 @@ mod imp {
         pub last_nav_pos: RefCell<Option<(f64, f64)>>,
         // Smoothed heading in degrees (for stable map rotation)
         pub smoothed_heading: RefCell<Option<f64>>,
+        // Screen idle inhibit — held during navigation, dropped to release
+        pub idle_inhibit: RefCell<Option<ashpd::desktop::Request<()>>>,
 
         // Persistent location dot and animation state for smooth inter-fix movement
         pub location_marker: RefCell<Option<shumate::Marker>>,
@@ -539,6 +541,30 @@ impl LociWindow {
         *imp.last_nav_pos.borrow_mut() = None;
         *imp.smoothed_heading.borrow_mut() = None;
 
+        // Inhibit screen idle while navigating
+        {
+            let window_weak = self.downgrade();
+            glib::spawn_future_local(async move {
+                match ashpd::desktop::inhibit::InhibitProxy::new().await {
+                    Ok(proxy) => {
+                        use ashpd::desktop::inhibit::{InhibitFlags, InhibitOptions};
+                        use ashpd::enumflags2::BitFlags;
+                        let flags = BitFlags::from(InhibitFlags::Idle);
+                        let opts = InhibitOptions::default().set_reason(Some("Turn-by-turn navigation is active"));
+                        match proxy.inhibit(None, flags, opts).await {
+                            Ok(req) => {
+                                if let Some(w) = window_weak.upgrade() {
+                                    *w.imp().idle_inhibit.borrow_mut() = Some(req);
+                                }
+                            }
+                            Err(e) => eprintln!("[inhibit] inhibit() failed: {e}"),
+                        }
+                    }
+                    Err(e) => eprintln!("[inhibit] InhibitProxy::new() failed: {e}"),
+                }
+            });
+        }
+
         // Spawn GPS streaming thread — feeds location into the navigation controller
         let nav_state = imp.nav_state.clone();
         let (loc_tx, loc_rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>)>();
@@ -695,7 +721,8 @@ impl LociWindow {
         *imp.pending_origin.borrow_mut() = None;
         *imp.last_nav_pos.borrow_mut() = None;
         *imp.smoothed_heading.borrow_mut() = None;
-        // Remove 3D tilt and reset map bearing to north
+        // Release screen idle inhibit
+        *imp.idle_inhibit.borrow_mut() = None;
         imp.map.remove_css_class("navigation-tilt");
         if let Some(viewport) = imp.map.viewport() {
             viewport.set_rotation(0.0);
