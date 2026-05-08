@@ -91,6 +91,10 @@ mod imp {
         pub anim_from: RefCell<Option<(f64, f64)>>,
         pub anim_to: RefCell<Option<(f64, f64)>>,
         pub anim_start: RefCell<Option<std::time::Instant>>,
+        // Heading animation (degrees) for smooth map rotation during navigation
+        pub heading_from: RefCell<Option<f64>>,
+        pub heading_to: RefCell<Option<f64>>,
+        pub heading_anim_start: RefCell<Option<std::time::Instant>>,
     }
 
     #[glib::object_subclass]
@@ -540,6 +544,9 @@ impl LociWindow {
         imp.map.add_css_class("navigation-tilt");
         *imp.last_nav_pos.borrow_mut() = None;
         *imp.smoothed_heading.borrow_mut() = None;
+        *imp.heading_from.borrow_mut() = None;
+        *imp.heading_to.borrow_mut() = None;
+        *imp.heading_anim_start.borrow_mut() = None;
 
         // Inhibit screen idle while navigating
         {
@@ -636,16 +643,11 @@ impl LociWindow {
                 // Advance animation — the 60fps timer handles marker + viewport movement
                 set_anim_target(&imp, lat, lon);
 
-                // Update smoothed heading so the animation timer can rotate the viewport
+                // Update heading animation target so the 60fps timer rotates the viewport smoothly
                 use ferrostar::navigation_controller::models::TripState;
                 if let TripState::Navigating { snapped_user_location, .. } = new_state.trip_state() {
                     if let Some(cog) = snapped_user_location.course_over_ground {
-                        let heading_deg = cog.degrees as f64;
-                        let smoothed = {
-                            let prev = imp.smoothed_heading.borrow().unwrap_or(heading_deg);
-                            smooth_angle(prev, heading_deg, 0.15)
-                        };
-                        *imp.smoothed_heading.borrow_mut() = Some(smoothed);
+                        set_heading_target(&imp, cog.degrees as f64);
                     }
                 }
 
@@ -721,6 +723,9 @@ impl LociWindow {
         *imp.pending_origin.borrow_mut() = None;
         *imp.last_nav_pos.borrow_mut() = None;
         *imp.smoothed_heading.borrow_mut() = None;
+        *imp.heading_from.borrow_mut() = None;
+        *imp.heading_to.borrow_mut() = None;
+        *imp.heading_anim_start.borrow_mut() = None;
         // Release screen idle inhibit
         *imp.idle_inhibit.borrow_mut() = None;
         imp.map.remove_css_class("navigation-tilt");
@@ -855,11 +860,21 @@ impl LociWindow {
                         marker.set_location(lat, lon);
                     }
 
-                    // During navigation also pan the viewport and apply heading rotation
+                    // During navigation also pan the viewport and apply animated heading
                     if imp.nav_controller.borrow().is_some() {
                         if let Some(viewport) = imp.map.viewport() {
                             viewport.set_location(lat, lon);
-                            if let Some(heading) = *imp.smoothed_heading.borrow() {
+
+                            let h_start = *imp.heading_anim_start.borrow();
+                            let h_from  = *imp.heading_from.borrow();
+                            let h_to    = *imp.heading_to.borrow();
+                            if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
+                                let ht_val = (hs.elapsed().as_secs_f64() / 1.0_f64).min(1.0);
+                                // Interpolate shortest angular path
+                                let mut delta = ht - hf;
+                                if delta > 180.0 { delta -= 360.0; }
+                                if delta < -180.0 { delta += 360.0; }
+                                let heading = ((hf + delta * ht_val) + 360.0) % 360.0;
                                 viewport.set_rotation(-heading.to_radians());
                             }
                         }
@@ -954,4 +969,28 @@ fn set_anim_target(imp: &imp::LociWindow, lat: f64, lon: f64) {
     *imp.anim_from.borrow_mut()  = Some(from);
     *imp.anim_to.borrow_mut()    = Some((lat, lon));
     *imp.anim_start.borrow_mut() = Some(std::time::Instant::now());
+}
+
+/// Set a new heading animation target (degrees clockwise from north).
+/// Captures the current interpolated angle as `heading_from` for seamless transitions.
+fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
+    let current = {
+        let hs = *imp.heading_anim_start.borrow();
+        let hf = *imp.heading_from.borrow();
+        let ht = *imp.heading_to.borrow();
+        match (hs, hf, ht) {
+            (Some(s), Some(f), Some(t)) => {
+                let tval = (s.elapsed().as_secs_f64() / 1.0_f64).min(1.0);
+                let mut delta = t - f;
+                if delta > 180.0 { delta -= 360.0; }
+                if delta < -180.0 { delta += 360.0; }
+                ((f + delta * tval) + 360.0) % 360.0
+            }
+            (_, _, Some(t)) => t,
+            _ => heading,
+        }
+    };
+    *imp.heading_from.borrow_mut()       = Some(current);
+    *imp.heading_to.borrow_mut()         = Some(heading);
+    *imp.heading_anim_start.borrow_mut() = Some(std::time::Instant::now());
 }
