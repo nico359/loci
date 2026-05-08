@@ -49,6 +49,10 @@ mod imp {
         pub nav_maneuver_icon: TemplateChild<gtk::Image>,
         #[template_child]
         pub nav_stop_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub zoom_in_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub zoom_out_button: TemplateChild<gtk::Button>,
 
         pub marker_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub location_layer: RefCell<Option<shumate::MarkerLayer>>,
@@ -187,6 +191,24 @@ impl LociWindow {
             }
             Err(e) => eprintln!("VectorRenderer::new error: {e}"),
         }
+
+        // Zoom buttons
+        imp.zoom_in_button.connect_clicked({
+            let map = imp.map.clone();
+            move |_| {
+                if let Some(viewport) = map.viewport() {
+                    viewport.set_zoom_level((viewport.zoom_level() + 1.0).min(20.0));
+                }
+            }
+        });
+        imp.zoom_out_button.connect_clicked({
+            let map = imp.map.clone();
+            move |_| {
+                if let Some(viewport) = map.viewport() {
+                    viewport.set_zoom_level((viewport.zoom_level() - 1.0).max(0.0));
+                }
+            }
+        });
     }
 
     fn setup_geocoding(&self) {

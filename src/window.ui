@@ -12,6 +12,7 @@
       <object class="GtkOverlay" id="overlay">
         <property name="child">
           <object class="ShumateSimpleMap" id="map">
+            <property name="show-zoom-buttons">false</property>
           </object>
         </property>
         <!-- Floating search bar at the top -->
@@ -131,6 +132,33 @@
               <class name="circular"/>
               <class name="osd"/>
             </style>
+          </object>
+        </child>
+        <!-- Zoom buttons: placed top-right but below the search bar -->
+        <child type="overlay">
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="spacing">2</property>
+            <property name="valign">start</property>
+            <property name="halign">end</property>
+            <property name="margin-top">72</property>
+            <property name="margin-end">16</property>
+            <style>
+              <class name="osd"/>
+              <class name="linked"/>
+            </style>
+            <child>
+              <object class="GtkButton" id="zoom_in_button">
+                <property name="icon-name">zoom-in-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Zoom In</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="zoom_out_button">
+                <property name="icon-name">zoom-out-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Zoom Out</property>
+              </object>
+            </child>
           </object>
         </child>
       </object>
