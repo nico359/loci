@@ -593,7 +593,7 @@ impl LociWindow {
 
                         if let Some(viewport) = imp.map.viewport() {
                             viewport.set_location(lat, lon);
-                            viewport.set_rotation(smoothed.to_radians());
+                            viewport.set_rotation(-smoothed.to_radians());
                         }
                     } else if let Some(viewport) = imp.map.viewport() {
                         viewport.set_location(lat, lon);
