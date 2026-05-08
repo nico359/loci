@@ -489,6 +489,12 @@ impl LociWindow {
         imp.nav_banner_revealer.set_reveal_child(true);
         Self::update_nav_banner(imp, &first_state);
 
+        // Centre map on current position immediately
+        if let Some(viewport) = imp.map.viewport() {
+            viewport.set_zoom_level(17.0);
+            viewport.set_location(origin.0, origin.1);
+        }
+
         // Apply chase-camera 3D tilt
         imp.map.add_css_class("navigation-tilt");
         *imp.last_nav_pos.borrow_mut() = None;
