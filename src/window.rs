@@ -599,56 +599,80 @@ impl LociWindow {
         let (tx, rx) = std::sync::mpsc::channel::<(f64, f64)>();
         let rx = Arc::new(Mutex::new(rx));
 
-        // Location button: request a fix from the XDG portal in a tokio thread
-        imp.location_button.connect_clicked({
+        // Start streaming location continuously in the background.
+        // This keeps the GeoClue session alive so GPS can improve over time.
+        {
             let tx = tx.clone();
-            move |btn| {
-                btn.set_sensitive(false);
-                let tx = tx.clone();
-                std::thread::spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-                    let result = rt.block_on(crate::location::get_location());
-                    match result {
-                        Some(coords) => { let _ = tx.send(coords); }
-                        None => eprintln!("Location request failed or was denied"),
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime");
+                rt.block_on(crate::location::stream_location(tx));
+            });
+        }
+
+        // Location button: just re-centres the map on the latest known fix.
+        // No longer starts a new session — the stream is already running.
+        imp.location_button.connect_clicked({
+            let window_weak = self.downgrade();
+            move |_| {
+                let Some(window) = window_weak.upgrade() else { return; };
+                let imp = window.imp();
+                let loc = imp.current_location.borrow().clone();
+                if let Some((lat, lon)) = loc {
+                    if let Some(viewport) = imp.map.viewport() {
+                        viewport.set_zoom_level(15.0);
+                        viewport.set_location(lat, lon);
                     }
-                });
+                }
             }
         });
 
-        // Poll for the location fix on the main loop
-        glib::timeout_add_local(std::time::Duration::from_millis(200), {
+        // Poll for location fixes on the main loop and update the blue dot.
+        // Only pan the map on the very first fix; after that the button does it.
+        let first_fix_received = std::cell::Cell::new(false);
+        glib::timeout_add_local(std::time::Duration::from_millis(500), {
             let window_weak = self.downgrade();
             move || {
-                if let Ok((lat, lon)) = rx.lock().unwrap().try_recv() {
-                    let Some(window) = window_weak.upgrade() else {
-                        return glib::ControlFlow::Break;
-                    };
-                    let imp = window.imp();
+                // Drain to latest fix only
+                let mut latest = None;
+                while let Ok(fix) = rx.lock().unwrap().try_recv() {
+                    latest = Some(fix);
+                }
+                let Some((lat, lon)) = latest else {
+                    return glib::ControlFlow::Continue;
+                };
+                let Some(window) = window_weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let imp = window.imp();
 
-                    imp.location_button.set_sensitive(true);
+                // Store fix so routing and location button can use it
+                *imp.current_location.borrow_mut() = Some((lat, lon));
 
-                    // Store fix so routing can use it
-                    *imp.current_location.borrow_mut() = Some((lat, lon));
+                // Pan to first fix automatically; subsequent pans only on button press
+                if !first_fix_received.get() {
+                    first_fix_received.set(true);
+                    if let Some(viewport) = imp.map.viewport() {
+                        viewport.set_zoom_level(15.0);
+                        viewport.set_location(lat, lon);
+                    }
+                }
 
-                    let viewport = imp.map.viewport().expect("no viewport");
-                    viewport.set_zoom_level(15.0);
-                    viewport.set_location(lat, lon);
-
-                    // Blue dot for current position
-                    let layer_opt = imp.location_layer.borrow().clone();
-                    if let Some(layer) = layer_opt {
-                        layer.remove_all();
-                        let marker = shumate::Marker::new();
-                        let dot = gtk::Box::builder()
-                            .width_request(18)
-                            .height_request(18)
-                            .build();
-                        dot.add_css_class("location-dot");
-                        marker.set_child(Some(&dot));
-                        marker.set_location(lat, lon);
-                        layer.add_marker(&marker);
-                    };
+                // Update blue dot
+                let layer_opt = imp.location_layer.borrow().clone();
+                if let Some(layer) = layer_opt {
+                    layer.remove_all();
+                    let marker = shumate::Marker::new();
+                    let dot = gtk::Box::builder()
+                        .width_request(18)
+                        .height_request(18)
+                        .build();
+                    dot.add_css_class("location-dot");
+                    marker.set_child(Some(&dot));
+                    marker.set_location(lat, lon);
+                    layer.add_marker(&marker);
                 }
                 glib::ControlFlow::Continue
             }

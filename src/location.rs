@@ -18,48 +18,52 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-use ashpd::desktop::location::{Accuracy, LocationProxy};
+use ashpd::desktop::location::{Accuracy, CreateSessionOptions, LocationProxy};
 use futures_util::StreamExt;
 
-/// Request a single location fix via the XDG Location portal (GeoClue2).
+async fn open_location_stream() -> ashpd::Result<(LocationProxy, impl futures_util::Stream<Item = ashpd::desktop::location::Location>)> {
+    let proxy = LocationProxy::new().await?;
+
+    let session = proxy
+        .create_session(
+            CreateSessionOptions::default()
+                .set_accuracy(Accuracy::Exact)
+                .set_distance_threshold(0u32)
+                .set_time_threshold(1u32),
+        )
+        .await?;
+
+    // Subscribe before start so we never miss the first fix.
+    let stream = proxy.receive_location_updated().await?;
+
+    proxy.start(&session, None, Default::default()).await?;
+
+    Ok((proxy, stream))
+}
+
+/// Request a single location fix via the XDG Location portal.
 /// Async — run inside a tokio runtime.
 pub async fn get_location() -> Option<(f64, f64)> {
-    let proxy = LocationProxy::new().await.ok()?;
-    let session = proxy
-        .create_session(None, None, Some(Accuracy::Exact))
-        .await
-        .ok()?;
-
-    // Subscribe to updates before calling start so we don't miss the first fix.
-    let mut stream = proxy.receive_location_updated().await.ok()?;
-
-    // start() asks the portal to begin location tracking; the first update
-    // arrives on the stream above. Errors here are non-fatal (e.g. user denied).
-    let _ = proxy.start(&session, None).await;
-
-    stream.next().await.map(|l| (l.latitude(), l.longitude()))
+    match open_location_stream().await {
+        Ok((_proxy, mut stream)) => stream.next().await.map(|l| (l.latitude(), l.longitude())),
+        Err(e) => { eprintln!("[location] portal error: {e}"); None }
+    }
 }
 
 /// Stream continuous location updates via the XDG Location portal.
 /// Sends each fix as `(lat, lon)` over `tx` until the receiver is dropped.
 /// Async — run inside a tokio runtime.
 pub async fn stream_location(tx: std::sync::mpsc::Sender<(f64, f64)>) {
-    let proxy = match LocationProxy::new().await {
-        Ok(p) => p,
-        Err(e) => { eprintln!("LocationProxy::new failed: {e}"); return; }
-    };
-    let session = match proxy.create_session(None, None, Some(Accuracy::Exact)).await {
-        Ok(s) => s,
-        Err(e) => { eprintln!("create_session failed: {e}"); return; }
-    };
-    let mut stream = match proxy.receive_location_updated().await {
-        Ok(s) => s,
-        Err(e) => { eprintln!("receive_location_updated failed: {e}"); return; }
-    };
-    let _ = proxy.start(&session, None).await;
-    while let Some(location) = stream.next().await {
-        if tx.send((location.latitude(), location.longitude())).is_err() {
-            break; // receiver dropped — navigation stopped
+    match open_location_stream().await {
+        Err(e) => eprintln!("[location] portal error: {e}"),
+        Ok((_proxy, mut stream)) => {
+            while let Some(location) = stream.next().await {
+                eprintln!("[location] fix: {:.5}, {:.5}  acc={}m",
+                    location.latitude(), location.longitude(), location.accuracy());
+                if tx.send((location.latitude(), location.longitude())).is_err() {
+                    break;
+                }
+            }
         }
     }
 }
