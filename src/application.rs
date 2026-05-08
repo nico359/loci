@@ -51,6 +51,11 @@ mod imp {
     impl ApplicationImpl for LociApplication {
         fn startup(&self) {
             self.parent_startup();
+            // Register bundled icons so GTK can find them by name
+            if let Some(display) = gdk::Display::default() {
+                gtk::IconTheme::for_display(&display)
+                    .add_resource_path("/io/github/nico359/loci/icons");
+            }
             // Load stylesheet after GTK is initialized
             let provider = gtk::CssProvider::new();
             provider.load_from_resource("/io/github/nico359/loci/style.css");

@@ -755,11 +755,15 @@ fn maneuver_icon(
     match (maneuver_type, maneuver_modifier) {
         (Some(Typ::Arrive), _) => "flag-filled-symbolic",
         (Some(Typ::Depart), _) => "find-location-symbolic",
-        (Some(Typ::Roundabout) | Some(Typ::Rotary) | Some(Typ::ExitRoundabout) | Some(Typ::ExitRotary), _) => "arrow-circular-symbolic",
-        (_, Some(Mod::Left) | Some(Mod::SharpLeft) | Some(Mod::SlightLeft)) => "go-previous-symbolic",
-        (_, Some(Mod::Right) | Some(Mod::SharpRight) | Some(Mod::SlightRight)) => "go-next-symbolic",
-        (_, Some(Mod::UTurn)) => "arrow-back-symbolic",
-        _ => "go-up-symbolic",
+        (Some(Typ::Roundabout) | Some(Typ::Rotary) | Some(Typ::ExitRoundabout) | Some(Typ::ExitRotary), _) => "maps-direction-roundabout-symbolic",
+        (_, Some(Mod::SharpLeft)) => "maps-direction-sharpleft-symbolic",
+        (_, Some(Mod::SharpRight)) => "maps-direction-sharpright-symbolic",
+        (_, Some(Mod::Left)) => "maps-direction-left-symbolic",
+        (_, Some(Mod::Right)) => "maps-direction-right-symbolic",
+        (_, Some(Mod::SlightLeft)) => "maps-direction-slightleft-symbolic",
+        (_, Some(Mod::SlightRight)) => "maps-direction-slightright-symbolic",
+        (_, Some(Mod::UTurn)) => "maps-direction-u-turn-right-symbolic",
+        _ => "maps-direction-continue-symbolic",
     }
 }
 

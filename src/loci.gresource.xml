@@ -5,4 +5,17 @@
     <file preprocess="xml-stripblanks">shortcuts-dialog.ui</file>
     <file>style.css</file>
   </gresource>
+  <gresource prefix="/io/github/nico359/loci/icons/scalable/actions">
+    <file alias="map-marker-symbolic.svg">icons/hicolor/scalable/actions/map-marker-symbolic.svg</file>
+    <file alias="flag-filled-symbolic.svg">icons/hicolor/scalable/actions/flag-filled-symbolic.svg</file>
+    <file alias="maps-direction-continue-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-continue-symbolic.svg</file>
+    <file alias="maps-direction-left-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-left-symbolic.svg</file>
+    <file alias="maps-direction-right-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-right-symbolic.svg</file>
+    <file alias="maps-direction-sharpleft-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-sharpleft-symbolic.svg</file>
+    <file alias="maps-direction-sharpright-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-sharpright-symbolic.svg</file>
+    <file alias="maps-direction-slightleft-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-slightleft-symbolic.svg</file>
+    <file alias="maps-direction-slightright-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-slightright-symbolic.svg</file>
+    <file alias="maps-direction-roundabout-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-roundabout-symbolic.svg</file>
+    <file alias="maps-direction-u-turn-right-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-u-turn-right-symbolic.svg</file>
+  </gresource>
 </gresources>

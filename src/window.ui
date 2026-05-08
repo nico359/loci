@@ -177,7 +177,7 @@
                 </style>
                 <child>
                   <object class="GtkImage" id="nav_maneuver_icon">
-                    <property name="icon-name">go-up-symbolic</property>
+                    <property name="icon-name">maps-direction-continue-symbolic</property>
                     <property name="pixel-size">32</property>
                     <property name="margin-start">12</property>
                   </object>
