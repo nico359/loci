@@ -274,7 +274,7 @@ impl LociWindow {
         let (tx, rx) = std::sync::mpsc::channel::<Vec<PhotonFeature>>();
         let rx = Arc::new(Mutex::new(rx));
 
-        // On Enter: spawn search thread
+        // On Enter or after a short typing pause: spawn search thread
         imp.search_entry.connect_activate({
             let tx = tx.clone();
             move |entry| {
@@ -284,6 +284,30 @@ impl LociWindow {
                 std::thread::spawn(move || {
                     let results = crate::geocoding::search(&query);
                     let _ = tx.send(results);
+                });
+            }
+        });
+
+        // Search-as-you-type: debounce 400ms so we don't hammer the API on every keystroke.
+        // Generation counter approach: bump gen on each keystroke; only the latest timer fires.
+        let search_gen: std::rc::Rc<std::cell::Cell<u64>> =
+            std::rc::Rc::new(std::cell::Cell::new(0));
+        imp.search_entry.connect_changed({
+            let tx = tx.clone();
+            let search_gen = search_gen.clone();
+            move |entry| {
+                let query = entry.text().to_string();
+                if query.len() < 3 { return; }
+                let gen = search_gen.get() + 1;
+                search_gen.set(gen);
+                let tx = tx.clone();
+                let search_gen2 = search_gen.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                    if search_gen2.get() != gen { return; }
+                    std::thread::spawn(move || {
+                        let results = crate::geocoding::search(&query);
+                        let _ = tx.send(results);
+                    });
                 });
             }
         });
