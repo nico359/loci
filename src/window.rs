@@ -53,12 +53,28 @@ mod imp {
         pub zoom_in_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub zoom_out_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub route_preview_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub route_dest_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub route_distance_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub route_time_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub route_start_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub route_cancel_button: TemplateChild<gtk::Button>,
 
         pub marker_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub location_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub route_layer: RefCell<Option<shumate::PathLayer>>,
         pub current_location: RefCell<Option<(f64, f64)>>,
         pub current_results: RefCell<Vec<PhotonFeature>>,
+
+        // Pending route: stored after fetch, before user taps "Start"
+        pub pending_route: RefCell<Option<ferrostar::models::Route>>,
+        pub pending_origin: RefCell<Option<(f64, f64)>>,
 
         // Navigation state shared between the GPS thread and the main loop timer
         pub nav_controller: RefCell<Option<std::sync::Arc<ferrostar::navigation_controller::NavigationController>>>,
@@ -277,7 +293,7 @@ impl LociWindow {
                             let row = gtk::ListBoxRow::new();
                             let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
                             hbox.set_margin_start(12);
-                            hbox.set_margin_end(8);
+                            hbox.set_margin_end(12);
                             hbox.set_margin_top(8);
                             hbox.set_margin_bottom(8);
 
@@ -301,27 +317,7 @@ impl LociWindow {
                             vbox.append(&name);
                             vbox.append(&subtitle);
 
-                            // Navigate button
-                            let nav_btn = gtk::Button::builder()
-                                .icon_name("road-symbolic")
-                                .tooltip_text("Navigate here")
-                                .valign(gtk::Align::Center)
-                                .build();
-                            nav_btn.add_css_class("flat");
-                            nav_btn.add_css_class("circular");
-
-                            let dest = (feat.lat, feat.lon);
-                            let nav_window_weak = window_weak.clone();
-                            let nav_popover = popover.clone();
-                            nav_btn.connect_clicked(move |_| {
-                                nav_popover.popdown();
-                                if let Some(w) = nav_window_weak.upgrade() {
-                                    w.request_route(dest);
-                                }
-                            });
-
                             hbox.append(&vbox);
-                            hbox.append(&nav_btn);
                             row.set_child(Some(&hbox));
                             list_box.append(&row);
                         }
@@ -332,7 +328,7 @@ impl LociWindow {
             }
         });
 
-        // On row tap: pan map to location and place a marker
+        // On row tap: pan map, place marker, and fetch route preview
         list_box.connect_row_activated({
             let popover = popover.clone();
             let window_weak = self.downgrade();
@@ -342,6 +338,7 @@ impl LociWindow {
                 let results = imp.current_results.borrow();
                 let Some(feat) = results.get(row.index() as usize) else { return };
                 let (lat, lon) = (feat.lat, feat.lon);
+                let dest_name = feat.name.clone();
                 drop(results);
 
                 // Pan map
@@ -364,12 +361,15 @@ impl LociWindow {
                 }
 
                 popover.popdown();
+
+                // Fetch route and show preview panel
+                window.request_route_preview((lat, lon), dest_name);
             }
         });
     }
 
-    /// Request a route from the current location to `destination`, draw it, and start navigation.
-    fn request_route(&self, destination: (f64, f64)) {
+    /// Fetch a route to `destination`, draw it on the map, then show the route preview panel.
+    fn request_route_preview(&self, destination: (f64, f64), dest_name: String) {
         let imp = self.imp();
         let origin = match *imp.current_location.borrow() {
             Some(loc) => loc,
@@ -379,10 +379,15 @@ impl LociWindow {
             }
         };
 
+        // Show destination name immediately; distance/time fill in when route arrives
+        imp.route_dest_label.set_text(&dest_name);
+        imp.route_distance_label.set_text("…");
+        imp.route_time_label.set_text("");
+        imp.route_preview_revealer.set_reveal_child(true);
+
         let (tx, rx) = std::sync::mpsc::channel::<ferrostar::models::Route>();
         let rx = Arc::new(Mutex::new(rx));
 
-        // Fetch route in background thread
         std::thread::spawn(move || {
             match crate::routing::get_route(origin, destination, crate::routing::DEFAULT_VALHALLA_URL, "auto") {
                 Some(route) => { let _ = tx.send(route); }
@@ -390,7 +395,6 @@ impl LociWindow {
             }
         });
 
-        // When route arrives: draw it + start navigation
         glib::timeout_add_local(std::time::Duration::from_millis(200), {
             let window_weak = self.downgrade();
             move || {
@@ -398,8 +402,9 @@ impl LociWindow {
                     let Some(window) = window_weak.upgrade() else {
                         return glib::ControlFlow::Break;
                     };
-                    // Draw the geometry
                     let imp = window.imp();
+
+                    // Draw the route geometry
                     let layer_opt = imp.route_layer.borrow().clone();
                     if let Some(layer) = layer_opt {
                         layer.remove_all();
@@ -407,9 +412,19 @@ impl LociWindow {
                             let node = shumate::Coordinate::new_full(c.lat, c.lng);
                             layer.add_node(&node);
                         }
-                    };
-                    // Start navigation
-                    window.start_navigation(origin, route);
+                    }
+
+                    // Compute totals from steps
+                    let total_distance: f64 = route.steps.iter().map(|s| s.distance).sum();
+                    let total_duration: f64 = route.steps.iter().map(|s| s.duration).sum();
+
+                    imp.route_distance_label.set_text(&format_distance(total_distance));
+                    imp.route_time_label.set_text(&format_duration(total_duration));
+
+                    // Store for "Start" button
+                    *imp.pending_route.borrow_mut() = Some(route);
+                    *imp.pending_origin.borrow_mut() = Some(origin);
+
                     return glib::ControlFlow::Break;
                 }
                 glib::ControlFlow::Continue
@@ -575,6 +590,35 @@ impl LociWindow {
                 }
             }
         });
+        imp.route_start_button.connect_clicked({
+            let window_weak = self.downgrade();
+            move |_| {
+                let Some(window) = window_weak.upgrade() else { return };
+                let imp = window.imp();
+                let route = imp.pending_route.borrow_mut().take();
+                let origin = imp.pending_origin.borrow_mut().take();
+                if let (Some(route), Some(origin)) = (route, origin) {
+                    imp.route_preview_revealer.set_reveal_child(false);
+                    window.start_navigation(origin, route);
+                }
+            }
+        });
+        imp.route_cancel_button.connect_clicked({
+            let window_weak = self.downgrade();
+            move |_| {
+                let Some(window) = window_weak.upgrade() else { return };
+                let imp = window.imp();
+                imp.route_preview_revealer.set_reveal_child(false);
+                *imp.pending_route.borrow_mut() = None;
+                *imp.pending_origin.borrow_mut() = None;
+                // Clear drawn route
+                let layer_opt = imp.route_layer.borrow().clone();
+                if let Some(layer) = layer_opt { layer.remove_all(); }
+                // Clear marker
+                let marker_opt = imp.marker_layer.borrow().clone();
+                if let Some(layer) = marker_opt { layer.remove_all(); }
+            }
+        });
     }
 
     fn stop_navigation(&self) {
@@ -582,11 +626,12 @@ impl LociWindow {
         imp.nav_banner_revealer.set_reveal_child(false);
         *imp.nav_controller.borrow_mut() = None;
         *imp.nav_state.lock().unwrap() = None;
-        // Clear route layer
+        *imp.pending_route.borrow_mut() = None;
+        *imp.pending_origin.borrow_mut() = None;
+        // Clear route layer and marker
         let layer_opt = imp.route_layer.borrow().clone();
-        if let Some(layer) = layer_opt {
-            layer.remove_all();
-        };
+        if let Some(layer) = layer_opt { layer.remove_all(); }
+        if let Some(layer) = imp.marker_layer.borrow().as_ref() { layer.remove_all(); }
     }
 
     /// Update the nav banner labels/icon from a NavState.
@@ -723,5 +768,18 @@ fn format_distance(meters: f64) -> String {
         format!("{:.1} km", meters / 1000.0)
     } else {
         format!("{} m", meters.round() as u32)
+    }
+}
+
+fn format_duration(seconds: f64) -> String {
+    let total = seconds.round() as u64;
+    let hours = total / 3600;
+    let mins = (total % 3600) / 60;
+    if hours > 0 {
+        format!("{} h {} min", hours, mins)
+    } else if mins == 0 {
+        "< 1 min".to_string()
+    } else {
+        format!("{} min", mins)
     }
 }

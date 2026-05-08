@@ -58,6 +58,106 @@
             </style>
           </object>
         </child>
+        <!-- Route preview panel: slides up from bottom after a search result is selected -->
+        <child type="overlay">
+          <object class="GtkRevealer" id="route_preview_revealer">
+            <property name="reveal-child">false</property>
+            <property name="transition-type">slide-up</property>
+            <property name="valign">end</property>
+            <property name="halign">fill</property>
+            <property name="margin-bottom">80</property>
+            <property name="margin-start">16</property>
+            <property name="margin-end">16</property>
+            <child>
+              <object class="GtkBox" id="route_preview_panel">
+                <property name="orientation">vertical</property>
+                <property name="spacing">4</property>
+                <style>
+                  <class name="nav-banner"/>
+                </style>
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">horizontal</property>
+                    <property name="spacing">8</property>
+                    <property name="margin-start">16</property>
+                    <property name="margin-end">8</property>
+                    <property name="margin-top">12</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="icon-name">map-marker-symbolic</property>
+                        <property name="pixel-size">20</property>
+                        <style>
+                          <class name="accent"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="route_dest_label">
+                        <property name="label">Destination</property>
+                        <property name="xalign">0.0</property>
+                        <property name="hexpand">true</property>
+                        <property name="ellipsize">end</property>
+                        <style>
+                          <class name="heading"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="route_cancel_button">
+                        <property name="icon-name">window-close-symbolic</property>
+                        <property name="tooltip-text" translatable="yes">Cancel</property>
+                        <property name="valign">center</property>
+                        <style>
+                          <class name="flat"/>
+                          <class name="circular"/>
+                        </style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">horizontal</property>
+                    <property name="spacing">16</property>
+                    <property name="margin-start">16</property>
+                    <property name="margin-end">16</property>
+                    <property name="margin-bottom">12</property>
+                    <child>
+                      <object class="GtkLabel" id="route_distance_label">
+                        <property name="label">—</property>
+                        <property name="xalign">0.0</property>
+                        <style>
+                          <class name="dim-label"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="route_time_label">
+                        <property name="label">—</property>
+                        <property name="xalign">0.0</property>
+                        <property name="hexpand">true</property>
+                        <style>
+                          <class name="dim-label"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="route_start_button">
+                        <property name="label" translatable="yes">Start</property>
+                        <property name="tooltip-text" translatable="yes">Start Navigation</property>
+                        <property name="valign">center</property>
+                        <style>
+                          <class name="suggested-action"/>
+                          <class name="pill"/>
+                        </style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
         <!-- Navigation banner: slides up from bottom during active navigation -->
         <child type="overlay">
           <object class="GtkRevealer" id="nav_banner_revealer">
