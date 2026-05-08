@@ -22,3 +22,8 @@ features = ["v1_7"]
 [dependencies.shumate]
 package = "libshumate"
 version = "0.8"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "s"
