@@ -83,6 +83,12 @@ mod imp {
         pub last_nav_pos: RefCell<Option<(f64, f64)>>,
         // Smoothed heading in degrees (for stable map rotation)
         pub smoothed_heading: RefCell<Option<f64>>,
+
+        // Persistent location dot and animation state for smooth inter-fix movement
+        pub location_marker: RefCell<Option<shumate::Marker>>,
+        pub anim_from: RefCell<Option<(f64, f64)>>,
+        pub anim_to: RefCell<Option<(f64, f64)>>,
+        pub anim_start: RefCell<Option<std::time::Instant>>,
     }
 
     #[glib::object_subclass]
@@ -200,6 +206,15 @@ impl LociWindow {
 
                 let location_layer = shumate::MarkerLayer::new(&viewport);
                 imp.map.add_overlay_layer(&location_layer);
+
+                // Create the persistent location dot once; we animate it rather than recreate it.
+                let location_marker = shumate::Marker::new();
+                let dot = gtk::Box::builder().width_request(18).height_request(18).build();
+                dot.add_css_class("location-dot");
+                location_marker.set_child(Some(&dot));
+                location_layer.add_marker(&location_marker);
+                *imp.location_marker.borrow_mut() = Some(location_marker);
+
                 *imp.location_layer.borrow_mut() = Some(location_layer);
 
                 // Path layer for route geometry (drawn below the marker layers)
@@ -564,42 +579,24 @@ impl LociWindow {
                     updated
                 };
 
-                // Update location dot
+                // Update location state
                 *imp.current_location.borrow_mut() = Some((lat, lon));
                 *imp.last_nav_pos.borrow_mut() = Some((lat, lon));
 
-                let loc_layer = imp.location_layer.borrow().clone();
-                if let Some(layer) = loc_layer {
-                    layer.remove_all();
-                    let marker = shumate::Marker::new();
-                    let dot = gtk::Box::builder().width_request(18).height_request(18).build();
-                    dot.add_css_class("location-dot");
-                    marker.set_child(Some(&dot));
-                    marker.set_location(lat, lon);
-                    layer.add_marker(&marker);
-                };
+                // Advance animation — the 60fps timer handles marker + viewport movement
+                set_anim_target(&imp, lat, lon);
 
-                // Pan map and rotate to face direction of travel
+                // Update smoothed heading so the animation timer can rotate the viewport
                 use ferrostar::navigation_controller::models::TripState;
                 if let TripState::Navigating { snapped_user_location, .. } = new_state.trip_state() {
                     if let Some(cog) = snapped_user_location.course_over_ground {
                         let heading_deg = cog.degrees as f64;
-                        // Smooth the heading using angle-aware IIR filter
                         let smoothed = {
                             let prev = imp.smoothed_heading.borrow().unwrap_or(heading_deg);
                             smooth_angle(prev, heading_deg, 0.15)
                         };
                         *imp.smoothed_heading.borrow_mut() = Some(smoothed);
-
-                        if let Some(viewport) = imp.map.viewport() {
-                            viewport.set_location(lat, lon);
-                            viewport.set_rotation(-smoothed.to_radians());
-                        }
-                    } else if let Some(viewport) = imp.map.viewport() {
-                        viewport.set_location(lat, lon);
                     }
-                } else if let Some(viewport) = imp.map.viewport() {
-                    viewport.set_location(lat, lon);
                 }
 
                 // Update banner from trip state
@@ -778,19 +775,44 @@ impl LociWindow {
                     }
                 }
 
-                // Update blue dot
-                let layer_opt = imp.location_layer.borrow().clone();
-                if let Some(layer) = layer_opt {
-                    layer.remove_all();
-                    let marker = shumate::Marker::new();
-                    let dot = gtk::Box::builder()
-                        .width_request(18)
-                        .height_request(18)
-                        .build();
-                    dot.add_css_class("location-dot");
-                    marker.set_child(Some(&dot));
-                    marker.set_location(lat, lon);
-                    layer.add_marker(&marker);
+                // Advance animation toward this new GPS fix
+                set_anim_target(&imp, lat, lon);
+                glib::ControlFlow::Continue
+            }
+        });
+
+        // 60 fps animation timer — smoothly interpolates the location dot (and viewport
+        // during navigation) between GPS fixes so movement looks fluid instead of jumping.
+        glib::timeout_add_local(std::time::Duration::from_millis(16), {
+            let window_weak = self.downgrade();
+            move || {
+                let Some(window) = window_weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let imp = window.imp();
+
+                let anim_start = *imp.anim_start.borrow();
+                let anim_from  = *imp.anim_from.borrow();
+                let anim_to    = *imp.anim_to.borrow();
+
+                if let (Some(start), Some(from), Some(to)) = (anim_start, anim_from, anim_to) {
+                    let t = (start.elapsed().as_secs_f64() / 1.0_f64).min(1.0);
+                    let lat = from.0 + (to.0 - from.0) * t;
+                    let lon = from.1 + (to.1 - from.1) * t;
+
+                    if let Some(marker) = imp.location_marker.borrow().as_ref() {
+                        marker.set_location(lat, lon);
+                    }
+
+                    // During navigation also pan the viewport and apply heading rotation
+                    if imp.nav_controller.borrow().is_some() {
+                        if let Some(viewport) = imp.map.viewport() {
+                            viewport.set_location(lat, lon);
+                            if let Some(heading) = *imp.smoothed_heading.borrow() {
+                                viewport.set_rotation(-heading.to_radians());
+                            }
+                        }
+                    }
                 }
                 glib::ControlFlow::Continue
             }
@@ -858,4 +880,27 @@ fn smooth_angle(prev: f64, target: f64, alpha: f64) -> f64 {
     if delta < -180.0 { delta += 360.0; }
     let result = prev + alpha * delta;
     (result + 360.0) % 360.0
+}
+
+/// Update the animation target for the location dot.
+/// Takes the current interpolated position as `anim_from` so transitions are seamless
+/// even if the previous animation hadn't completed yet.
+fn set_anim_target(imp: &imp::LociWindow, lat: f64, lon: f64) {
+    let from = {
+        let start = *imp.anim_start.borrow();
+        let from  = *imp.anim_from.borrow();
+        let to    = *imp.anim_to.borrow();
+        match (start, from, to) {
+            (Some(s), Some(f), Some(t)) => {
+                let elapsed = s.elapsed().as_secs_f64();
+                let tval = (elapsed / 1.0_f64).min(1.0);
+                (f.0 + (t.0 - f.0) * tval, f.1 + (t.1 - f.1) * tval)
+            }
+            (_, _, Some(t)) => t,
+            _ => (lat, lon),
+        }
+    };
+    *imp.anim_from.borrow_mut()  = Some(from);
+    *imp.anim_to.borrow_mut()    = Some((lat, lon));
+    *imp.anim_start.borrow_mut() = Some(std::time::Instant::now());
 }
