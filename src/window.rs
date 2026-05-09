@@ -705,6 +705,9 @@ impl LociWindow {
                     updated
                 };
 
+                // Capture previous position before updating it (needed for bearing below).
+                let prev_nav_pos = imp.last_nav_pos.borrow().clone();
+
                 // Update location state
                 *imp.current_location.borrow_mut() = Some((lat, lon));
                 *imp.last_nav_pos.borrow_mut() = Some((lat, lon));
@@ -731,8 +734,7 @@ impl LociWindow {
                 // Position-derived bearing IS the direction of travel and is always correct.
                 // We only update rotation when we've moved enough to get a meaningful bearing;
                 // while stationary the map simply holds the last known rotation.
-                let prev_pos = imp.last_nav_pos.borrow().clone();
-                if let Some((prev_lat, prev_lon)) = prev_pos {
+                if let Some((prev_lat, prev_lon)) = prev_nav_pos {
                     let dist = haversine_m(prev_lat, prev_lon, lat, lon);
                     if dist >= MIN_BEARING_DIST {
                         let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
