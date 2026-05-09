@@ -723,8 +723,15 @@ impl LociWindow {
                 *imp.current_location.borrow_mut() = Some((lat, lon));
                 *imp.last_nav_pos.borrow_mut() = Some((lat, lon));
 
-                // Advance animation — the 60fps timer handles marker + viewport movement
-                set_anim_target(&imp, lat, lon);
+                // Animate the dot to the snapped position (projected onto the route line)
+                // so it stays on the road rather than following raw GPS drift.
+                use ferrostar::navigation_controller::models::TripState;
+                let dot_pos = if let TripState::Navigating { snapped_user_location, .. } = new_state.trip_state() {
+                    (snapped_user_location.coordinates.lat, snapped_user_location.coordinates.lng)
+                } else {
+                    (lat, lon)
+                };
+                set_anim_target(&imp, dot_pos.0, dot_pos.1);
 
                 // Update heading animation target so the 60fps timer rotates the viewport smoothly.
                 // Only update when we actually got a fresh reliable heading this fix.
@@ -733,7 +740,6 @@ impl LociWindow {
                 }
 
                 // Update banner from trip state
-                use ferrostar::navigation_controller::models::TripState;
                 if matches!(new_state.trip_state(), TripState::Complete { .. }) {
                     imp.nav_instruction_label.set_text("You have arrived!");
                     imp.nav_distance_label.set_text("");
