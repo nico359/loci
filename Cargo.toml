@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["full"] }
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "location", "inhibit"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "location"] }
 ferrostar = { version = "0.49", default-features = false, features = ["std"] }
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 

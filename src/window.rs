@@ -84,7 +84,7 @@ mod imp {
         // Smoothed heading in degrees (for stable map rotation)
         pub smoothed_heading: RefCell<Option<f64>>,
         // Screen idle inhibit — held during navigation, dropped to release
-        pub idle_inhibit: RefCell<Option<ashpd::desktop::Request<()>>>,
+        pub idle_inhibit: RefCell<Option<u32>>,
 
         // Persistent location dot and animation state for smooth inter-fix movement
         pub location_marker: RefCell<Option<shumate::Marker>>,
@@ -564,28 +564,14 @@ impl LociWindow {
         *imp.heading_to.borrow_mut() = None;
         *imp.heading_anim_start.borrow_mut() = None;
 
-        // Inhibit screen idle while navigating
-        {
-            let window_weak = self.downgrade();
-            glib::spawn_future_local(async move {
-                match ashpd::desktop::inhibit::InhibitProxy::new().await {
-                    Ok(proxy) => {
-                        use ashpd::desktop::inhibit::{InhibitFlags, InhibitOptions};
-                        use ashpd::enumflags2::BitFlags;
-                        let flags = BitFlags::from(InhibitFlags::Idle);
-                        let opts = InhibitOptions::default().set_reason(Some("Turn-by-turn navigation is active"));
-                        match proxy.inhibit(None, flags, opts).await {
-                            Ok(req) => {
-                                if let Some(w) = window_weak.upgrade() {
-                                    *w.imp().idle_inhibit.borrow_mut() = Some(req);
-                                }
-                            }
-                            Err(e) => eprintln!("[inhibit] inhibit() failed: {e}"),
-                        }
-                    }
-                    Err(e) => eprintln!("[inhibit] InhibitProxy::new() failed: {e}"),
-                }
-            });
+        // Inhibit screen idle while navigating via GTK application inhibit API.
+        if let Some(app) = self.application() {
+            let cookie = app.inhibit(
+                Some(self),
+                gtk::ApplicationInhibitFlags::IDLE,
+                Some("Turn-by-turn navigation is active"),
+            );
+            *imp.idle_inhibit.borrow_mut() = Some(cookie);
         }
 
         // Spawn GPS streaming thread — feeds location into the navigation controller
@@ -859,7 +845,11 @@ impl LociWindow {
         imp.is_rerouting.set(false);
         *imp.reroute_result.lock().unwrap() = None;
         // Release screen idle inhibit
-        *imp.idle_inhibit.borrow_mut() = None;
+        if let Some(cookie) = imp.idle_inhibit.borrow_mut().take() {
+            if let Some(app) = self.application() {
+                app.uninhibit(cookie);
+            }
+        }
         imp.map.remove_css_class("navigation-tilt");
         if let Some(viewport) = imp.map.viewport() {
             viewport.set_rotation(0.0);
