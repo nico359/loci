@@ -733,10 +733,19 @@ impl LociWindow {
                 };
                 set_anim_target(&imp, dot_pos.0, dot_pos.1);
 
-                // Update heading animation target so the 60fps timer rotates the viewport smoothly.
-                // Only update when we actually got a fresh reliable heading this fix.
-                if let Some(ref cog) = course {
-                    set_heading_target(&imp, cog.degrees as f64);
+                // Map rotation: derive bearing from actual position movement only.
+                // The phone compass (GPS heading field) reflects device orientation, which
+                // is unreliable in cars due to magnetic interference from the motor/speakers.
+                // Position-derived bearing IS the direction of travel and is always correct.
+                // We only update rotation when we've moved enough to get a meaningful bearing;
+                // while stationary the map simply holds the last known rotation.
+                let prev_pos = imp.last_nav_pos.borrow().clone();
+                if let Some((prev_lat, prev_lon)) = prev_pos {
+                    let dist = haversine_m(prev_lat, prev_lon, lat, lon);
+                    if dist >= MIN_BEARING_DIST {
+                        let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
+                        set_heading_target(&imp, bearing);
+                    }
                 }
 
                 // Update banner from trip state
