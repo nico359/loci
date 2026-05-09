@@ -723,11 +723,17 @@ impl LociWindow {
                 *imp.current_location.borrow_mut() = Some((lat, lon));
                 *imp.last_nav_pos.borrow_mut() = Some((lat, lon));
 
-                // Animate the dot to the snapped position (projected onto the route line)
-                // so it stays on the road rather than following raw GPS drift.
+                // Animate the dot to the snapped position only when on-route.
+                // When off-route, Ferrostar still snaps to the nearest point on the old
+                // route line, so the dot would hang there instead of following the user.
                 use ferrostar::navigation_controller::models::TripState;
-                let dot_pos = if let TripState::Navigating { snapped_user_location, .. } = new_state.trip_state() {
-                    (snapped_user_location.coordinates.lat, snapped_user_location.coordinates.lng)
+                use ferrostar::deviation_detection::RouteDeviation;
+                let dot_pos = if let TripState::Navigating { snapped_user_location, deviation, .. } = new_state.trip_state() {
+                    match deviation {
+                        RouteDeviation::NoDeviation =>
+                            (snapped_user_location.coordinates.lat, snapped_user_location.coordinates.lng),
+                        RouteDeviation::OffRoute { .. } => (lat, lon),
+                    }
                 } else {
                     (lat, lon)
                 };
@@ -766,7 +772,6 @@ impl LociWindow {
                 Self::update_nav_banner(imp, &new_state);
 
                 // Trigger reroute when off-route (10 s cooldown, one request at a time)
-                use ferrostar::deviation_detection::RouteDeviation;
                 if let TripState::Navigating { deviation: RouteDeviation::OffRoute { .. }, .. } = new_state.trip_state() {
                     let now = std::time::Instant::now();
                     let can_reroute = !imp.is_rerouting.get() && {
