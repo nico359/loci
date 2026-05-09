@@ -95,6 +95,12 @@ mod imp {
         pub heading_from: RefCell<Option<f64>>,
         pub heading_to: RefCell<Option<f64>>,
         pub heading_anim_start: RefCell<Option<std::time::Instant>>,
+
+        // Rerouting — destination stored so we can re-request a route when off-route
+        pub nav_destination: RefCell<Option<(f64, f64)>>,
+        pub last_reroute_at: RefCell<Option<std::time::Instant>>,
+        pub is_rerouting: std::cell::Cell<bool>,
+        pub reroute_result: std::sync::Arc<std::sync::Mutex<Option<ferrostar::models::Route>>>,
     }
 
     #[glib::object_subclass]
@@ -504,9 +510,20 @@ impl LociWindow {
                 distance: 10,
                 minimum_horizontal_accuracy: 50,
             }),
-            route_deviation_tracking: RouteDeviationTracking::None,
+            route_deviation_tracking: RouteDeviationTracking::StaticThreshold {
+                minimum_horizontal_accuracy: 25,
+                max_acceptable_deviation: 25.0,
+            },
             snapped_location_course_filtering: CourseFiltering::Raw,
         };
+
+        // Store destination for rerouting (last point in route geometry)
+        let destination = route.geometry.last().map(|c| (c.lat, c.lng)).unwrap_or(origin);
+        let imp = self.imp();
+        *imp.nav_destination.borrow_mut() = Some(destination);
+        imp.is_rerouting.set(false);
+        *imp.last_reroute_at.borrow_mut() = None;
+        *imp.reroute_result.lock().unwrap() = None;
 
         let controller = Arc::new(NavigationController::new(route, config));
         eprintln!("[nav] NavigationController created, calling get_initial_state...");
@@ -521,7 +538,6 @@ impl LociWindow {
         // get_initial_state() returns a NavState already in TripState::Navigating
         let first_state = controller.get_initial_state(initial_location);
 
-        let imp = self.imp();
         *imp.nav_controller.borrow_mut() = Some(controller.clone());
 
         // Store first state
@@ -586,9 +602,9 @@ impl LociWindow {
         // Navigation update loop — runs on main thread
         glib::timeout_add_local(std::time::Duration::from_millis(500), {
             let window_weak = self.downgrade();
-            let controller = controller.clone();
             let nav_state = nav_state.clone();
             let loc_rx = loc_rx.clone();
+            let reroute_result = imp.reroute_result.clone();
             move || {
                 // Drain all pending location fixes (use the latest one)
                 let mut latest: Option<(f64, f64, Option<f64>)> = None;
@@ -608,14 +624,30 @@ impl LociWindow {
                 use ferrostar::models::{CourseOverGround, GeographicCoordinate, UserLocation};
 
                 // Build course_over_ground from GPS heading, or compute from position delta
+                // only when the device has moved enough to produce a meaningful bearing.
+                // Tiny GPS jitter (~1-3m) between fixes produces garbage bearings, so we
+                // require at least MIN_BEARING_DIST metres of movement before using the
+                // computed fallback. If no reliable heading is available, pass None so
+                // Ferrostar snaps position without spinning the map.
+                const MIN_BEARING_DIST: f64 = 10.0; // metres
                 let imp = window.imp();
                 let course = gps_heading
-                    .map(|h| CourseOverGround::new(h, None))
+                    .map(|h| {
+                        eprintln!("[nav] heading: GPS {h:.1}°");
+                        CourseOverGround::new(h, None)
+                    })
                     .or_else(|| {
                         let prev = imp.last_nav_pos.borrow().clone();
-                        prev.map(|(prev_lat, prev_lon)| {
-                            let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
-                            CourseOverGround::new(bearing, None)
+                        prev.and_then(|(prev_lat, prev_lon)| {
+                            let dist = haversine_m(prev_lat, prev_lon, lat, lon);
+                            if dist >= MIN_BEARING_DIST {
+                                let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
+                                eprintln!("[nav] heading: computed {bearing:.1}° ({dist:.0}m delta)");
+                                Some(CourseOverGround::new(bearing, None))
+                            } else {
+                                eprintln!("[nav] heading: none (delta {dist:.1}m < threshold)");
+                                None
+                            }
                         })
                     });
 
@@ -625,6 +657,57 @@ impl LociWindow {
                     course_over_ground: course,
                     timestamp: std::time::SystemTime::now(),
                     speed: None,
+                };
+
+                // If a reroute just completed, swap in the new controller and reset state.
+                {
+                    let mut slot = reroute_result.lock().unwrap();
+                    if let Some(new_route) = slot.take() {
+                        drop(slot);
+                        let step_advance = Arc::new(DistanceToEndOfStepCondition {
+                            distance: 25,
+                            minimum_horizontal_accuracy: 50,
+                        });
+                        let new_config = NavigationControllerConfig {
+                            waypoint_advance: WaypointAdvanceMode::WaypointWithinRange(50.0),
+                            step_advance_condition: step_advance.clone(),
+                            arrival_step_advance_condition: Arc::new(DistanceToEndOfStepCondition {
+                                distance: 10,
+                                minimum_horizontal_accuracy: 50,
+                            }),
+                            route_deviation_tracking: RouteDeviationTracking::StaticThreshold {
+                                minimum_horizontal_accuracy: 25,
+                                max_acceptable_deviation: 25.0,
+                            },
+                            snapped_location_course_filtering: CourseFiltering::Raw,
+                        };
+                        let new_controller = Arc::new(NavigationController::new(new_route.clone(), new_config));
+                        let first_state = new_controller.get_initial_state(UserLocation {
+                            coordinates: GeographicCoordinate { lat, lng: lon },
+                            horizontal_accuracy: 10.0,
+                            course_over_ground: course,
+                            timestamp: std::time::SystemTime::now(),
+                            speed: None,
+                        });
+                        // Update route polyline on map
+                        if let Some(layer) = imp.route_layer.borrow().clone() {
+                            layer.remove_all();
+                            for c in &new_route.geometry {
+                                layer.add_node(&shumate::Coordinate::new_full(c.lat, c.lng));
+                            }
+                        }
+                        *imp.nav_controller.borrow_mut() = Some(new_controller);
+                        *nav_state.lock().unwrap() = Some(first_state.clone());
+                        imp.is_rerouting.set(false);
+                        Self::update_nav_banner(imp, &first_state);
+                        return glib::ControlFlow::Continue;
+                    }
+                }
+
+                // Read current controller (may have been swapped by reroute)
+                let controller = imp.nav_controller.borrow().clone();
+                let Some(controller) = controller else {
+                    return glib::ControlFlow::Break;
                 };
 
                 // Update navigation state
@@ -643,15 +726,14 @@ impl LociWindow {
                 // Advance animation — the 60fps timer handles marker + viewport movement
                 set_anim_target(&imp, lat, lon);
 
-                // Update heading animation target so the 60fps timer rotates the viewport smoothly
-                use ferrostar::navigation_controller::models::TripState;
-                if let TripState::Navigating { snapped_user_location, .. } = new_state.trip_state() {
-                    if let Some(cog) = snapped_user_location.course_over_ground {
-                        set_heading_target(&imp, cog.degrees as f64);
-                    }
+                // Update heading animation target so the 60fps timer rotates the viewport smoothly.
+                // Only update when we actually got a fresh reliable heading this fix.
+                if let Some(ref cog) = course {
+                    set_heading_target(&imp, cog.degrees as f64);
                 }
 
                 // Update banner from trip state
+                use ferrostar::navigation_controller::models::TripState;
                 if matches!(new_state.trip_state(), TripState::Complete { .. }) {
                     imp.nav_instruction_label.set_text("You have arrived!");
                     imp.nav_distance_label.set_text("");
@@ -667,6 +749,32 @@ impl LociWindow {
                     return glib::ControlFlow::Break;
                 }
                 Self::update_nav_banner(imp, &new_state);
+
+                // Trigger reroute when off-route (10 s cooldown, one request at a time)
+                use ferrostar::deviation_detection::RouteDeviation;
+                if let TripState::Navigating { deviation: RouteDeviation::OffRoute { .. }, .. } = new_state.trip_state() {
+                    let now = std::time::Instant::now();
+                    let can_reroute = !imp.is_rerouting.get() && {
+                        let last = imp.last_reroute_at.borrow();
+                        last.map_or(true, |t| now.duration_since(t).as_secs() >= 10)
+                    };
+                    if can_reroute {
+                        *imp.last_reroute_at.borrow_mut() = Some(now);
+                        imp.is_rerouting.set(true);
+                        imp.nav_instruction_label.set_text("Rerouting…");
+                        imp.nav_distance_label.set_text("");
+                        if let Some(dest) = *imp.nav_destination.borrow() {
+                            let rr = reroute_result.clone();
+                            let from = (lat, lon);
+                            std::thread::spawn(move || {
+                                match crate::routing::get_route(from, dest, crate::routing::DEFAULT_VALHALLA_URL, "auto") {
+                                    Some(route) => { *rr.lock().unwrap() = Some(route); }
+                                    None => eprintln!("[nav] reroute request failed"),
+                                }
+                            });
+                        }
+                    }
+                }
 
                 glib::ControlFlow::Continue
             }
@@ -726,6 +834,10 @@ impl LociWindow {
         *imp.heading_from.borrow_mut() = None;
         *imp.heading_to.borrow_mut() = None;
         *imp.heading_anim_start.borrow_mut() = None;
+        *imp.nav_destination.borrow_mut() = None;
+        *imp.last_reroute_at.borrow_mut() = None;
+        imp.is_rerouting.set(false);
+        *imp.reroute_result.lock().unwrap() = None;
         // Release screen idle inhibit
         *imp.idle_inhibit.borrow_mut() = None;
         imp.map.remove_css_class("navigation-tilt");
@@ -925,6 +1037,16 @@ fn format_duration(seconds: f64) -> String {
     } else {
         format!("{} min", mins)
     }
+}
+
+/// Haversine distance in metres between two WGS-84 coordinates.
+fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6_371_000.0;
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * R * a.sqrt().asin()
 }
 
 /// Great-circle bearing from point 1 → point 2, in clockwise degrees from north [0, 360).
