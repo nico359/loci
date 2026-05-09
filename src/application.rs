@@ -117,13 +117,22 @@ impl LociApplication {
         let about = adw::AboutDialog::builder()
             .application_name("Loci")
             .application_icon("io.github.nico359.loci")
-            .developer_name("furios")
+            .developer_name("nico359")
             .version(VERSION)
-            .developers(vec!["furios"])
+            .developers(vec!["nico359", "GitHub Copilot CLI (Claude)"])
+            .comments("A turn-by-turn navigation app for mobile Linux.\n\nBuilt with the assistance of AI (GitHub Copilot CLI, powered by Claude).")
+            .website("https://github.com/nico359/loci")
+            .issue_url("https://github.com/nico359/loci/issues")
+            .license_type(gtk::License::Gpl30)
             // Translators: Replace "translator-credits" with your name/username, and optionally an email or URL.
             .translator_credits(&gettext("translator-credits"))
-            .copyright("© 2026 furios")
+            .copyright("© 2026 nico359")
             .build();
+
+        about.add_credit_section(
+            Some(&gettext("Inspired by")),
+            &["GNOME Maps by the GNOME Project https://apps.gnome.org/Maps/"],
+        );
 
         about.present(Some(&window));
     }
