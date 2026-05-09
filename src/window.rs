@@ -1060,16 +1060,6 @@ fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     (bearing + 360.0) % 360.0
 }
 
-/// Exponential smoothing for an angle in degrees, handling the 0/360 wrap-around.
-fn smooth_angle(prev: f64, target: f64, alpha: f64) -> f64 {
-    // Compute shortest angular delta
-    let mut delta = target - prev;
-    if delta > 180.0 { delta -= 360.0; }
-    if delta < -180.0 { delta += 360.0; }
-    let result = prev + alpha * delta;
-    (result + 360.0) % 360.0
-}
-
 /// Update the animation target for the location dot.
 /// Takes the current interpolated position as `anim_from` so transitions are seamless
 /// even if the previous animation hadn't completed yet.

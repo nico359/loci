@@ -41,15 +41,6 @@ async fn open_location_stream() -> ashpd::Result<(LocationProxy, impl futures_ut
     Ok((proxy, stream))
 }
 
-/// Request a single location fix via the XDG Location portal.
-/// Async — run inside a tokio runtime.
-pub async fn get_location() -> Option<(f64, f64)> {
-    match open_location_stream().await {
-        Ok((_proxy, mut stream)) => stream.next().await.map(|l| (l.latitude(), l.longitude())),
-        Err(e) => { eprintln!("[location] portal error: {e}"); None }
-    }
-}
-
 /// Stream continuous location updates via the XDG Location portal.
 /// Sends each fix as `(lat, lon, Option<heading_deg>)` over `tx` until the
 /// receiver is dropped.  Heading is clockwise degrees from north (0 = north,
