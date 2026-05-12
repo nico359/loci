@@ -74,8 +74,8 @@
             ],
             "sources" : [
                 {
-                    "type" : "git",
-                    "url" : "file:///home/furios/Projects/Loci"
+                    "type" : "dir",
+                    "path" : "."
                 }
             ]
         }
