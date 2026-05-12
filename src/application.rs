@@ -134,6 +134,27 @@ impl LociApplication {
             &["GNOME Maps by the GNOME Project https://apps.gnome.org/Maps/"],
         );
 
+        about.add_legal_section(
+            "Map Data",
+            None,
+            gtk::License::Custom,
+            Some("Map data by <a href=\"https://www.openstreetmap.org\">OpenStreetMap</a> and contributors, licensed under <a href=\"https://opendatacommons.org/licenses/odbl/\">ODbL</a>."),
+        );
+
+        about.add_legal_section(
+            "Map Tiles",
+            None,
+            gtk::License::Custom,
+            Some("Map tiles provided by <a href=\"https://openmaptiles.org\">OpenMapTiles</a>, hosted by GNOME."),
+        );
+
+        about.add_legal_section(
+            "Routing",
+            None,
+            gtk::License::Custom,
+            Some("Turn-by-turn routing provided by <a href=\"https://valhalla.github.io/valhalla/\">Valhalla</a> via <a href=\"https://routing.openstreetmap.de\">routing.openstreetmap.de</a>."),
+        );
+
         about.present(Some(&window));
     }
 }
