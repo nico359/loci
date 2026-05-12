@@ -6,10 +6,9 @@
   box-shadow: 0 1px 4px rgba(0,0,0,0.4);
 }
 
-/* Search bar and nav banner: opaque, theme-aware overlays above the map.
+/* Nav banner: opaque, theme-aware overlay above the map.
  * @window_bg_color / @window_fg_color are defined by Adwaita and adapt to
  * dark/light mode while always being fully opaque. */
-.map-search-bar,
 .nav-banner {
   background-color: @window_bg_color;
   color: @window_fg_color;
@@ -26,6 +25,3 @@
  * rotation (bearing-up) is handled via Viewport::set_rotation() instead. */
 /* .navigation-tilt { ... } */
 
-.map-search-bar {
-  padding: 4px;
-}
