@@ -5,7 +5,7 @@
   <project_license>GPL-3.0-or-later</project_license>
 
   <name>Loci</name>
-  <summary>Turn-by-turn navigation for mobile Linux</summary>
+  <summary>Turn-by-turn navigation (mostly) for Linux phones</summary>
   <description>
     <p>Loci is a navigation app designed for mobile Linux devices. It provides turn-by-turn directions with automatic rerouting when you leave the route, map rotation to follow your direction of travel, and a clean interface inspired by GNOME Maps.</p>
     <p>Location is sourced from the XDG Location Portal (GeoClue) and routing from the Valhalla routing engine. The map snaps the position indicator to the road when on-route. </p>
@@ -39,12 +39,12 @@
         <p>Initial release.</p>
         <ul>
           <li>Turn-by-turn navigation with maneuver instructions</li>
-          <li>Map rotation following direction of travel</li>
+          <li>Map rotation following direction of travel (kind of)</li>
           <li>Automatic rerouting when off-route</li>
-          <li>Route snapping — position indicator follows the road</li>
+          <li>Route snapping - position indicator follows the road</li>
           <li>Address search via Nominatim geocoding</li>
           <li>Location via the XDG Location Portal (GeoClue)</li>
-          <li>Routing via the Valhalla engine</li>
+          <li>Routing via the Valhalla and Ferrostar</li>
           <li>Screen idle inhibit during navigation</li>
         </ul>
       </description>
