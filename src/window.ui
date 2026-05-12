@@ -7,26 +7,18 @@
     <property name="title" translatable="yes">Loci</property>
     <property name="default-width">480</property>
     <property name="default-height">800</property>
-    <!-- AdwToolbarView: provides a proper CSD headerbar on desktop while
-         remaining adaptive on mobile (Phosh). The headerbar holds the search
-         entry and menu button; the map overlay fills the content area. -->
+    <!-- AdwToolbarView: the transparent AdwHeaderBar provides CSD window
+         decorations (close/min/max, drag handle) on desktop without occupying
+         visual space — its background is made fully transparent via CSS.
+         The floating search bar overlay below retains the original look. -->
     <property name="content">
       <object class="AdwToolbarView">
         <child type="top">
-          <object class="AdwHeaderBar">
-            <property name="title-widget">
-              <object class="GtkSearchEntry" id="search_entry">
-                <property name="hexpand">True</property>
-                <property name="placeholder-text" translatable="yes">Search places…</property>
-              </object>
-            </property>
-            <child type="end">
-              <object class="GtkMenuButton" id="menu_button">
-                <property name="icon-name">open-menu-symbolic</property>
-                <property name="tooltip-text" translatable="yes">Main Menu</property>
-                <property name="menu-model">primary_menu</property>
-              </object>
-            </child>
+          <object class="AdwHeaderBar" id="map_header_bar">
+            <style>
+              <class name="flat"/>
+              <class name="map-header-bar"/>
+            </style>
           </object>
         </child>
         <property name="content">
@@ -36,6 +28,35 @@
             <property name="show-zoom-buttons">false</property>
           </object>
         </property>
+        <!-- Floating search bar at the top -->
+        <child type="overlay">
+          <object class="GtkBox" id="search_bar_box">
+            <property name="orientation">horizontal</property>
+            <property name="margin-top">12</property>
+            <property name="margin-start">12</property>
+            <property name="margin-end">12</property>
+            <property name="valign">start</property>
+            <property name="halign">fill</property>
+            <property name="spacing">8</property>
+            <style>
+              <class name="map-search-bar"/>
+              <class name="linked"/>
+            </style>
+            <child>
+              <object class="GtkSearchEntry" id="search_entry">
+                <property name="hexpand">True</property>
+                <property name="placeholder-text" translatable="yes">Search places…</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkMenuButton" id="menu_button">
+                <property name="icon-name">open-menu-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Main Menu</property>
+                <property name="menu-model">primary_menu</property>
+              </object>
+            </child>
+          </object>
+        </child>
         <!-- Attribution label at the bottom right (required by OSM tile usage policy) -->
         <child type="overlay">
           <object class="GtkLabel" id="attribution_label">
@@ -233,7 +254,7 @@
             <property name="spacing">2</property>
             <property name="valign">start</property>
             <property name="halign">end</property>
-            <property name="margin-top">12</property>
+            <property name="margin-top">72</property>
             <property name="margin-end">16</property>
             <style>
               <class name="osd"/>
