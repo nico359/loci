@@ -145,7 +145,7 @@ impl LociApplication {
             "Map Tiles",
             None,
             gtk::License::Custom,
-            Some("Map tiles provided by <a href=\"https://openmaptiles.org\">OpenMapTiles</a>, hosted by GNOME."),
+            Some("Map tiles and style provided by <a href=\"https://openfreemap.org\">OpenFreeMap</a>, using the <a href=\"https://openmaptiles.org\">OpenMapTiles</a> schema."),
         );
 
         about.add_legal_section(

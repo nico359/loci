@@ -157,87 +157,114 @@ impl LociWindow {
             return;
         }
 
-        // Use the same tile server as GNOME Maps — static URL, OpenMapTiles v3 schema.
-        // Glyphs from James Westman's font server (same as GNOME Maps).
-        let style = serde_json::json!({
-            "version": 8,
-            "name": "Loci",
-            "sources": {
-                "vector-tiles": {
-                    "type": "vector",
-                    "tiles": ["https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf"],
-                    "minzoom": 0,
-                    "maxzoom": 14
+        // Fetch the TileJSON from OpenFreeMap to get the current versioned tile URL,
+        // then build our style, apply it, and set up all layers on the main thread.
+        let style_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let slot_writer = Arc::clone(&style_slot);
+        std::thread::spawn(move || {
+            let tile_url = reqwest::blocking::get("https://tiles.openfreemap.org/planet")
+                .and_then(|r| r.json::<serde_json::Value>())
+                .ok()
+                .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()));
+
+            let url = match tile_url {
+                Some(u) => {
+                    eprintln!("[tiles] resolved OpenFreeMap URL: {u}");
+                    u
                 }
-            },
-            "glyphs": "https://tiles.maps.jwestman.net/fonts/{fontstack}/{range}.pbf",
-            "layers": [
-                {"id": "background", "type": "background",
-                 "paint": {"background-color": "#f0ebe3"}},
-                {"id": "water", "type": "fill",
-                 "source": "vector-tiles", "source-layer": "water",
-                 "paint": {"fill-color": "#a8d4f0"}},
-                {"id": "landcover-park", "type": "fill",
-                 "source": "vector-tiles", "source-layer": "landcover",
-                 "filter": ["in", "class", "grass", "park", "forest"],
-                 "paint": {"fill-color": "#c8e6c0"}},
-                {"id": "road-minor", "type": "line",
-                 "source": "vector-tiles", "source-layer": "transportation",
-                 "filter": ["in", "class", "minor", "path", "service"],
-                 "paint": {"line-color": "#d8d0c8", "line-width": 1}},
-                {"id": "road-secondary", "type": "line",
-                 "source": "vector-tiles", "source-layer": "transportation",
-                 "filter": ["in", "class", "secondary", "tertiary"],
-                 "paint": {"line-color": "#c0b8b0", "line-width": 2}},
-                {"id": "road-primary", "type": "line",
-                 "source": "vector-tiles", "source-layer": "transportation",
-                 "filter": ["in", "class", "primary", "trunk", "motorway"],
-                 "paint": {"line-color": "#e8c070", "line-width": 3}},
-                {"id": "building", "type": "fill",
-                 "source": "vector-tiles", "source-layer": "building",
-                 "paint": {"fill-color": "#dbd5cc", "fill-outline-color": "#c8c0b8"}},
-                {"id": "place-label", "type": "symbol",
-                 "source": "vector-tiles", "source-layer": "place",
-                 "layout": {"text-field": ["get", "name:latin"], "text-size": 13},
-                 "paint": {"text-color": "#333", "text-halo-color": "#fff",
-                           "text-halo-width": 1}}
-            ]
+                None => {
+                    eprintln!("Failed to resolve OpenFreeMap tile URL, falling back");
+                    "https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf".to_owned()
+                }
+            };
+
+            let style = serde_json::json!({
+                "version": 8,
+                "name": "Loci",
+                "sources": {
+                    "openmaptiles": {
+                        "type": "vector",
+                        "tiles": [url],
+                        "minzoom": 0,
+                        "maxzoom": 14
+                    }
+                },
+                "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+                "layers": [
+                    {"id": "background", "type": "background",
+                     "paint": {"background-color": "#f0ebe3"}},
+                    {"id": "water", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "water",
+                     "paint": {"fill-color": "#a8d4f0"}},
+                    {"id": "landcover-park", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landcover",
+                     "filter": ["in", "class", "grass", "park", "forest"],
+                     "paint": {"fill-color": "#c8e6c0"}},
+                    {"id": "road-minor", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "minor", "path", "service"],
+                     "paint": {"line-color": "#d8d0c8", "line-width": 1}},
+                    {"id": "road-secondary", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "secondary", "tertiary"],
+                     "paint": {"line-color": "#c0b8b0", "line-width": 2}},
+                    {"id": "road-primary", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "primary", "trunk", "motorway"],
+                     "paint": {"line-color": "#e8c070", "line-width": 3}},
+                    {"id": "building", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "building",
+                     "paint": {"fill-color": "#dbd5cc", "fill-outline-color": "#c8c0b8"}},
+                    {"id": "place-label", "type": "symbol",
+                     "source": "openmaptiles", "source-layer": "place",
+                     "layout": {"text-field": ["get", "name:latin"], "text-size": 13},
+                     "paint": {"text-color": "#333", "text-halo-color": "#fff",
+                               "text-halo-width": 1}}
+                ]
+            });
+            *slot_writer.lock().unwrap() = Some(style.to_string());
         });
 
-        match shumate::VectorRenderer::new("gnome-tiles", &style.to_string()) {
-            Ok(renderer) => {
-                imp.map.set_map_source(Some(&renderer));
-                let viewport = imp.map.viewport().expect("SimpleMap has no viewport");
-                viewport.set_zoom_level(12.0);
-                viewport.set_location(52.5200, 13.4050);
+        // Poll for the style JSON on the main thread; once it arrives set the map
+        // source first, then create all layers (libshumate requires this ordering).
+        let window = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            if let Some(json) = style_slot.lock().unwrap().take() {
+                let imp = window.imp();
+                match shumate::VectorRenderer::new("ofm-tiles", &json) {
+                    Ok(renderer) => {
+                        imp.map.set_map_source(Some(&renderer));
+                        let viewport = imp.map.viewport().expect("SimpleMap has no viewport");
+                        viewport.set_zoom_level(12.0);
+                        viewport.set_location(52.5200, 13.4050);
 
-                // Marker layers: one for search pins, one for current location
-                let marker_layer = shumate::MarkerLayer::new(&viewport);
-                imp.map.add_overlay_layer(&marker_layer);
-                *imp.marker_layer.borrow_mut() = Some(marker_layer);
+                        let marker_layer = shumate::MarkerLayer::new(&viewport);
+                        imp.map.add_overlay_layer(&marker_layer);
+                        *imp.marker_layer.borrow_mut() = Some(marker_layer);
 
-                let location_layer = shumate::MarkerLayer::new(&viewport);
-                imp.map.add_overlay_layer(&location_layer);
+                        let location_layer = shumate::MarkerLayer::new(&viewport);
+                        imp.map.add_overlay_layer(&location_layer);
 
-                // Create the persistent location dot once; we animate it rather than recreate it.
-                let location_marker = shumate::Marker::new();
-                let dot = gtk::Box::builder().width_request(18).height_request(18).build();
-                dot.add_css_class("location-dot");
-                location_marker.set_child(Some(&dot));
-                location_layer.add_marker(&location_marker);
-                *imp.location_marker.borrow_mut() = Some(location_marker);
+                        let location_marker = shumate::Marker::new();
+                        let dot = gtk::Box::builder().width_request(18).height_request(18).build();
+                        dot.add_css_class("location-dot");
+                        location_marker.set_child(Some(&dot));
+                        location_layer.add_marker(&location_marker);
+                        *imp.location_marker.borrow_mut() = Some(location_marker);
+                        *imp.location_layer.borrow_mut() = Some(location_layer);
 
-                *imp.location_layer.borrow_mut() = Some(location_layer);
-
-                // Path layer for route geometry (drawn below the marker layers)
-                let route_layer = shumate::PathLayer::new(&viewport);
-                route_layer.set_stroke_width(5.0);
-                route_layer.set_stroke_color(Some(&gdk::RGBA::new(0.2, 0.5, 1.0, 0.9)));
-                imp.map.add_overlay_layer(&route_layer);
-                *imp.route_layer.borrow_mut() = Some(route_layer);
+                        let route_layer = shumate::PathLayer::new(&viewport);
+                        route_layer.set_stroke_width(5.0);
+                        route_layer.set_stroke_color(Some(&gdk::RGBA::new(0.2, 0.5, 1.0, 0.9)));
+                        imp.map.add_overlay_layer(&route_layer);
+                        *imp.route_layer.borrow_mut() = Some(route_layer);
+                    }
+                    Err(e) => eprintln!("VectorRenderer::new error: {e}"),
+                }
+                return glib::ControlFlow::Break;
             }
-            Err(e) => eprintln!("VectorRenderer::new error: {e}"),
-        }
+            glib::ControlFlow::Continue
+        });
 
         // Zoom buttons
         imp.zoom_in_button.connect_clicked({

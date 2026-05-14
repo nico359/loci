@@ -60,7 +60,7 @@
         <!-- Attribution label at the bottom right (required by OSM tile usage policy) -->
         <child type="overlay">
           <object class="GtkLabel" id="attribution_label">
-            <property name="label">© OpenStreetMap contributors · © OpenMapTiles</property>
+            <property name="label">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</property>
             <property name="valign">end</property>
             <property name="halign">end</property>
             <property name="margin-bottom">8</property>
