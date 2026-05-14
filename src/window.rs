@@ -158,25 +158,18 @@ impl LociWindow {
         }
 
         // Fetch the TileJSON from OpenFreeMap to get the current versioned tile URL,
-        // then build our style, apply it, and set up all layers on the main thread.
+        // then build a hand-rolled style that only uses expressions libshumate supports.
         let style_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let slot_writer = Arc::clone(&style_slot);
         std::thread::spawn(move || {
             let tile_url = reqwest::blocking::get("https://tiles.openfreemap.org/planet")
                 .and_then(|r| r.json::<serde_json::Value>())
                 .ok()
-                .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()));
-
-            let url = match tile_url {
-                Some(u) => {
-                    eprintln!("[tiles] resolved OpenFreeMap URL: {u}");
-                    u
-                }
-                None => {
-                    eprintln!("Failed to resolve OpenFreeMap tile URL, falling back");
+                .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()))
+                .unwrap_or_else(|| {
+                    eprintln!("[tiles] TileJSON fetch failed, using fallback");
                     "https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf".to_owned()
-                }
-            };
+                });
 
             let style = serde_json::json!({
                 "version": 8,
@@ -184,42 +177,165 @@ impl LociWindow {
                 "sources": {
                     "openmaptiles": {
                         "type": "vector",
-                        "tiles": [url],
+                        "tiles": [tile_url],
                         "minzoom": 0,
                         "maxzoom": 14
                     }
                 },
                 "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
                 "layers": [
+                    // --- Background & land ---
                     {"id": "background", "type": "background",
                      "paint": {"background-color": "#f0ebe3"}},
-                    {"id": "water", "type": "fill",
+                    {"id": "landcover-grass", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landcover",
+                     "filter": ["in", "class", "grass", "meadow", "park"],
+                     "paint": {"fill-color": "#d8eeca"}},
+                    {"id": "landcover-forest", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landcover",
+                     "filter": ["==", "class", "forest"],
+                     "paint": {"fill-color": "#c0ddb0"}},
+                    // --- Landuse ---
+                    {"id": "landuse-residential", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landuse",
+                     "filter": ["==", "class", "residential"],
+                     "paint": {"fill-color": "#e8e0d8"}},
+                    {"id": "landuse-commercial", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landuse",
+                     "filter": ["==", "class", "commercial"],
+                     "paint": {"fill-color": "#f0e8d8"}},
+                    {"id": "landuse-industrial", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landuse",
+                     "filter": ["==", "class", "industrial"],
+                     "paint": {"fill-color": "#ded8cc"}},
+                    {"id": "landuse-park", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "landuse",
+                     "filter": ["in", "class", "park", "pitch"],
+                     "paint": {"fill-color": "#d0e8c0"}},
+                    // --- Water ---
+                    {"id": "water-fill", "type": "fill",
                      "source": "openmaptiles", "source-layer": "water",
                      "paint": {"fill-color": "#a8d4f0"}},
-                    {"id": "landcover-park", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landcover",
-                     "filter": ["in", "class", "grass", "park", "forest"],
-                     "paint": {"fill-color": "#c8e6c0"}},
+                    {"id": "waterway", "type": "line",
+                     "source": "openmaptiles", "source-layer": "waterway",
+                     "paint": {"line-color": "#a8d4f0",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              10, 1, 14, 3]}},
+                    // --- Buildings ---
+                    {"id": "building", "type": "fill",
+                     "source": "openmaptiles", "source-layer": "building",
+                     "minzoom": 13,
+                     "paint": {"fill-color": "#dbd5cc",
+                               "fill-outline-color": "#c0b8b0"}},
+                    // --- Roads ---
+                    {"id": "road-path", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "path", "track"],
+                     "paint": {"line-color": "#d0c8c0", "line-width": 1,
+                               "line-dasharray": [2, 2]}},
                     {"id": "road-minor", "type": "line",
                      "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "minor", "path", "service"],
-                     "paint": {"line-color": "#d8d0c8", "line-width": 1}},
+                     "filter": ["in", "class", "minor", "service"],
+                     "paint": {"line-color": "#f0ece4",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              12, 1, 16, 4]}},
+                    {"id": "road-minor-casing", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "minor", "service"],
+                     "paint": {"line-color": "#d8d0c8",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              12, 2, 16, 6],
+                               "line-gap-width": 0},
+                     "layout": {"line-sort-key": -1}},
                     {"id": "road-secondary", "type": "line",
                      "source": "openmaptiles", "source-layer": "transportation",
                      "filter": ["in", "class", "secondary", "tertiary"],
-                     "paint": {"line-color": "#c0b8b0", "line-width": 2}},
+                     "paint": {"line-color": "#f8f4e8",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              10, 2, 16, 8]}},
+                    {"id": "road-secondary-casing", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "secondary", "tertiary"],
+                     "paint": {"line-color": "#d8d0b0",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              10, 3, 16, 10]},
+                     "layout": {"line-sort-key": -2}},
                     {"id": "road-primary", "type": "line",
                      "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "primary", "trunk", "motorway"],
-                     "paint": {"line-color": "#e8c070", "line-width": 3}},
-                    {"id": "building", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "building",
-                     "paint": {"fill-color": "#dbd5cc", "fill-outline-color": "#c8c0b8"}},
-                    {"id": "place-label", "type": "symbol",
+                     "filter": ["in", "class", "primary", "trunk"],
+                     "paint": {"line-color": "#fce8a0",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              8, 2, 16, 12]}},
+                    {"id": "road-primary-casing", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["in", "class", "primary", "trunk"],
+                     "paint": {"line-color": "#e0c878",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              8, 3, 16, 14]},
+                     "layout": {"line-sort-key": -3}},
+                    {"id": "road-motorway", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["==", "class", "motorway"],
+                     "paint": {"line-color": "#f8b060",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              6, 2, 16, 14]}},
+                    {"id": "road-motorway-casing", "type": "line",
+                     "source": "openmaptiles", "source-layer": "transportation",
+                     "filter": ["==", "class", "motorway"],
+                     "paint": {"line-color": "#d89040",
+                               "line-width": ["interpolate", ["linear"], ["zoom"],
+                                              6, 3, 16, 16]},
+                     "layout": {"line-sort-key": -4}},
+                    // --- Labels ---
+                    {"id": "road-name", "type": "symbol",
+                     "source": "openmaptiles", "source-layer": "transportation_name",
+                     "minzoom": 14,
+                     "layout": {
+                         "text-field": ["get", "name"],
+                         "text-size": 11,
+                         "text-font": ["Noto Sans Regular"],
+                         "symbol-placement": "line",
+                         "text-max-angle": 30
+                     },
+                     "paint": {"text-color": "#555",
+                               "text-halo-color": "#fff",
+                               "text-halo-width": 1}},
+                    {"id": "housenumber", "type": "symbol",
+                     "source": "openmaptiles", "source-layer": "housenumber",
+                     "minzoom": 17,
+                     "layout": {
+                         "text-field": ["get", "housenumber"],
+                         "text-size": 10,
+                         "text-font": ["Noto Sans Regular"]
+                     },
+                     "paint": {"text-color": "#888",
+                               "text-halo-color": "#fff",
+                               "text-halo-width": 1}},
+                    {"id": "place-suburb", "type": "symbol",
                      "source": "openmaptiles", "source-layer": "place",
-                     "layout": {"text-field": ["get", "name:latin"], "text-size": 13},
-                     "paint": {"text-color": "#333", "text-halo-color": "#fff",
-                               "text-halo-width": 1}}
+                     "filter": ["in", "class", "suburb", "quarter", "neighbourhood"],
+                     "minzoom": 13,
+                     "layout": {
+                         "text-field": ["get", "name"],
+                         "text-size": 11,
+                         "text-font": ["Noto Sans Italic"],
+                         "text-transform": "uppercase"
+                     },
+                     "paint": {"text-color": "#888",
+                               "text-halo-color": "#f0ebe3",
+                               "text-halo-width": 1}},
+                    {"id": "place-city", "type": "symbol",
+                     "source": "openmaptiles", "source-layer": "place",
+                     "filter": ["in", "class", "city", "town", "village"],
+                     "layout": {
+                         "text-field": ["get", "name"],
+                         "text-size": ["interpolate", ["linear"], ["zoom"],
+                                       8, 11, 12, 14],
+                         "text-font": ["Noto Sans Bold"]
+                     },
+                     "paint": {"text-color": "#333",
+                               "text-halo-color": "#fff",
+                               "text-halo-width": 2}}
                 ]
             });
             *slot_writer.lock().unwrap() = Some(style.to_string());
@@ -1037,6 +1153,7 @@ impl LociWindow {
     }
 }
 
+/// Walk a serde_json Value tree and replace every `["linear", <arg>]` array
 fn maneuver_icon(
     maneuver_type: Option<ferrostar::models::ManeuverType>,
     maneuver_modifier: Option<ferrostar::models::ManeuverModifier>,
