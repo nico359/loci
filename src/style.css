@@ -9,26 +9,11 @@
 /* Nav banner: opaque, theme-aware overlay above the map.
  * @window_bg_color / @window_fg_color are defined by Adwaita and adapt to
  * dark/light mode while always being fully opaque. */
-.map-search-bar,
 .nav-banner {
   background-color: @window_bg_color;
   color: @window_fg_color;
   border-radius: 12px;
   box-shadow: 0 2px 10px rgba(0,0,0,0.35);
-}
-
-.map-search-bar {
-  padding: 4px;
-}
-
-/* Transparent headerbar: provides CSD window decorations (close/min/max,
- * drag-to-move) on desktop without visually occupying space above the map.
- * The floating search bar overlay renders on top of the map as before. */
-.map-header-bar,
-.map-header-bar .headerbar {
-  background: transparent;
-  box-shadow: none;
-  border: none;
 }
 
 /* Navigation mode: 3D chase-camera tilt.
