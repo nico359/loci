@@ -20,7 +20,7 @@
 
 use ferrostar::routing_adapters::osrm::OsrmResponseParser;
 use ferrostar::routing_adapters::RouteResponseParser;
-use ferrostar::models::Route;
+use ferrostar::models::{ManeuverModifier, ManeuverType, Route, VisualInstruction, VisualInstructionContent};
 
 /// Base URL for the OSRM routing service.
 pub const DEFAULT_OSRM_BASE_URL: &str = "https://routing.openstreetmap.de";
@@ -67,14 +67,202 @@ pub fn get_route(
     eprintln!("[routing] response {} bytes", bytes.len());
 
     // Standard OSRM uses polyline precision 5.
-    match OsrmResponseParser::new(5).parse_response(bytes.to_vec()) {
+    let mut routes = match OsrmResponseParser::new(5).parse_response(bytes.to_vec()) {
         Ok(routes) => {
             eprintln!("[routing] parsed {} route(s)", routes.len());
-            routes.into_iter().next()
+            routes
         }
         Err(e) => {
             eprintln!("[routing] parse error: {e:?}");
-            None
+            return None;
         }
+    };
+
+    // Standard OSRM doesn't include pre-synthesized instruction text or banner instructions.
+    // Parse the raw JSON to extract maneuver type/modifier/road-name and synthesize them.
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        let raw_steps: Vec<serde_json::Value> = json["routes"]
+            .as_array()
+            .and_then(|r| r.first())
+            .and_then(|r| r["legs"].as_array())
+            .map(|legs| {
+                legs.iter()
+                    .flat_map(|leg| leg["steps"].as_array().cloned().unwrap_or_default())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if let Some(route) = routes.first_mut() {
+            for (step, raw) in route.steps.iter_mut().zip(raw_steps.iter()) {
+                let maneuver = &raw["maneuver"];
+                let mtype_str = maneuver["type"].as_str().unwrap_or("");
+                let mmod_str = maneuver["modifier"].as_str().unwrap_or("");
+                let road_name = raw["name"].as_str().unwrap_or("").trim();
+                let exit_num = maneuver["exit"].as_u64();
+
+                let mtype = parse_maneuver_type(mtype_str);
+                let mmod = parse_maneuver_modifier(mmod_str);
+                let text = synthesize_instruction(mtype, mmod, road_name, exit_num);
+
+                step.instruction = text.clone();
+
+                // Synthesize a VisualInstruction so the NavigationController can trigger
+                // it at the right distance threshold.
+                let trigger = (step.distance * 0.3).clamp(30.0, 250.0);
+                step.visual_instructions = vec![VisualInstruction {
+                    primary_content: VisualInstructionContent {
+                        text,
+                        maneuver_type: mtype,
+                        maneuver_modifier: mmod,
+                        roundabout_exit_degrees: None,
+                        lane_info: None,
+                        exit_numbers: vec![],
+                    },
+                    secondary_content: None,
+                    sub_content: None,
+                    trigger_distance_before_maneuver: trigger,
+                }];
+            }
+        }
+    }
+
+    routes.into_iter().next()
+}
+
+fn parse_maneuver_type(s: &str) -> Option<ManeuverType> {
+    match s {
+        "turn" => Some(ManeuverType::Turn),
+        "new name" => Some(ManeuverType::NewName),
+        "depart" => Some(ManeuverType::Depart),
+        "arrive" => Some(ManeuverType::Arrive),
+        "merge" => Some(ManeuverType::Merge),
+        "on ramp" => Some(ManeuverType::OnRamp),
+        "off ramp" => Some(ManeuverType::OffRamp),
+        "fork" => Some(ManeuverType::Fork),
+        "end of road" => Some(ManeuverType::EndOfRoad),
+        "continue" => Some(ManeuverType::Continue),
+        "roundabout" => Some(ManeuverType::Roundabout),
+        "rotary" => Some(ManeuverType::Rotary),
+        "roundabout turn" => Some(ManeuverType::RoundaboutTurn),
+        "notification" => Some(ManeuverType::Notification),
+        "exit roundabout" => Some(ManeuverType::ExitRoundabout),
+        "exit rotary" => Some(ManeuverType::ExitRotary),
+        _ => None,
+    }
+}
+
+fn parse_maneuver_modifier(s: &str) -> Option<ManeuverModifier> {
+    match s {
+        "uturn" => Some(ManeuverModifier::UTurn),
+        "sharp right" => Some(ManeuverModifier::SharpRight),
+        "right" => Some(ManeuverModifier::Right),
+        "slight right" => Some(ManeuverModifier::SlightRight),
+        "straight" => Some(ManeuverModifier::Straight),
+        "slight left" => Some(ManeuverModifier::SlightLeft),
+        "left" => Some(ManeuverModifier::Left),
+        "sharp left" => Some(ManeuverModifier::SharpLeft),
+        _ => None,
+    }
+}
+
+fn modifier_text(mmod: Option<ManeuverModifier>) -> &'static str {
+    match mmod {
+        Some(ManeuverModifier::UTurn) => "make a U-turn",
+        Some(ManeuverModifier::SharpRight) => "turn sharp right",
+        Some(ManeuverModifier::Right) => "turn right",
+        Some(ManeuverModifier::SlightRight) => "keep right",
+        Some(ManeuverModifier::Straight) | None => "continue straight",
+        Some(ManeuverModifier::SlightLeft) => "keep left",
+        Some(ManeuverModifier::Left) => "turn left",
+        Some(ManeuverModifier::SharpLeft) => "turn sharp left",
+    }
+}
+
+fn synthesize_instruction(
+    mtype: Option<ManeuverType>,
+    mmod: Option<ManeuverModifier>,
+    road_name: &str,
+    exit_num: Option<u64>,
+) -> String {
+    let onto = if road_name.is_empty() {
+        String::new()
+    } else {
+        format!(" onto {road_name}")
+    };
+    let on = if road_name.is_empty() {
+        String::new()
+    } else {
+        format!(" on {road_name}")
+    };
+
+    match mtype {
+        Some(ManeuverType::Depart) => {
+            if road_name.is_empty() { "Depart".into() }
+            else { format!("Head {}{on}", modifier_text(mmod).trim_start_matches("continue ").trim_start_matches("turn ")) }
+        }
+        Some(ManeuverType::Arrive) => "You have arrived at your destination".into(),
+        Some(ManeuverType::Turn) | Some(ManeuverType::EndOfRoad) => {
+            let dir = modifier_text(mmod);
+            format!("{}{onto}", capitalize(dir))
+        }
+        Some(ManeuverType::NewName) => {
+            if road_name.is_empty() { "Continue".into() }
+            else { format!("Continue{onto}") }
+        }
+        Some(ManeuverType::Continue) | Some(ManeuverType::Notification) => {
+            format!("Continue{on}")
+        }
+        Some(ManeuverType::Merge) => {
+            format!("Merge{onto}")
+        }
+        Some(ManeuverType::OnRamp) => {
+            let dir = modifier_text(mmod);
+            format!("Take the ramp on the {}", dir.trim_start_matches("turn ").trim_start_matches("keep "))
+        }
+        Some(ManeuverType::OffRamp) => {
+            format!("Take the exit{onto}")
+        }
+        Some(ManeuverType::Fork) => {
+            let side = match mmod {
+                Some(ManeuverModifier::Left) | Some(ManeuverModifier::SlightLeft) | Some(ManeuverModifier::SharpLeft) => "left",
+                _ => "right",
+            };
+            format!("Keep {side} at the fork{onto}")
+        }
+        Some(ManeuverType::Roundabout) | Some(ManeuverType::Rotary) => {
+            if let Some(n) = exit_num {
+                format!("Enter the roundabout and take the {n}{} exit", ordinal_suffix(n))
+            } else {
+                "Enter the roundabout".into()
+            }
+        }
+        Some(ManeuverType::RoundaboutTurn) => {
+            let dir = modifier_text(mmod);
+            format!("{} on the roundabout{onto}", capitalize(dir))
+        }
+        Some(ManeuverType::ExitRoundabout) | Some(ManeuverType::ExitRotary) => {
+            format!("Exit the roundabout{onto}")
+        }
+        None => {
+            if road_name.is_empty() { "Continue".into() }
+            else { format!("Continue{on}") }
+        }
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+fn ordinal_suffix(n: u64) -> &'static str {
+    match n % 10 {
+        1 if n % 100 != 11 => "st",
+        2 if n % 100 != 12 => "nd",
+        3 if n % 100 != 13 => "rd",
+        _ => "th",
     }
 }
