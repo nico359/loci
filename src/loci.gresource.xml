@@ -17,5 +17,6 @@
     <file alias="maps-direction-slightright-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-slightright-symbolic.svg</file>
     <file alias="maps-direction-roundabout-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-roundabout-symbolic.svg</file>
     <file alias="maps-direction-u-turn-right-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-u-turn-right-symbolic.svg</file>
+    <file alias="route-symbolic.svg">icons/hicolor/scalable/actions/route-symbolic.svg</file>
   </gresource>
 </gresources>

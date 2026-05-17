@@ -65,12 +65,29 @@ mod imp {
         pub route_start_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub route_cancel_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub directions_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub planner_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub planner_close_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub planner_from_entry: TemplateChild<gtk::Entry>,
+        #[template_child]
+        pub planner_to_entry: TemplateChild<gtk::Entry>,
+        #[template_child]
+        pub planner_go_button: TemplateChild<gtk::Button>,
 
         pub marker_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub location_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub route_layer: RefCell<Option<shumate::PathLayer>>,
         pub current_location: RefCell<Option<(f64, f64)>>,
         pub current_results: RefCell<Vec<PhotonFeature>>,
+
+        // Planner state: geocoded coords for from/to entries
+        pub planner_from_coords: RefCell<Option<(f64, f64)>>,
+        pub planner_to_coords: RefCell<Option<(f64, f64)>>,
+        pub planner_to_name: RefCell<String>,
 
         // Pending route: stored after fetch, before user taps "Start"
         pub pending_route: RefCell<Option<ferrostar::models::Route>>,
@@ -124,6 +141,7 @@ mod imp {
             self.parent_constructed();
             self.obj().setup_map();
             self.obj().setup_geocoding();
+            self.obj().setup_planner();
             self.obj().setup_location();
             self.obj().setup_navigation();
         }
@@ -404,170 +422,148 @@ impl LociWindow {
     fn setup_geocoding(&self) {
         let imp = self.imp();
 
-        // Results list inside a popover anchored to the search entry
-        let list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .build();
-        list_box.add_css_class("boxed-list");
+        // Main search entry: on select, pan map, place marker, fetch route from GPS origin
+        attach_geocoding_popover(
+            self,
+            &imp.search_entry.get(),
+            {
+                let window_weak = self.downgrade();
+                move |feat| {
+                    let Some(window) = window_weak.upgrade() else { return };
+                    let imp = window.imp();
+                    let (lat, lon) = (feat.lat, feat.lon);
+                    let dest_name = feat.name.clone();
 
-        let scrolled = gtk::ScrolledWindow::builder()
-            .child(&list_box)
-            .max_content_height(320)
-            .propagate_natural_height(true)
-            .min_content_width(300)
-            .build();
+                    // Pan map and place marker
+                    let viewport = imp.map.viewport().expect("no viewport");
+                    viewport.set_zoom_level(14.0);
+                    viewport.set_location(lat, lon);
 
-        let popover = gtk::Popover::builder()
-            .child(&scrolled)
-            .has_arrow(false)
-            .position(gtk::PositionType::Bottom)
-            .autohide(true)
-            .can_focus(false)
-            .build();
-        popover.set_parent(&imp.search_entry.get());
-
-        // Channel: background search threads → main thread results
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<PhotonFeature>>();
-        let rx = Arc::new(Mutex::new(rx));
-
-        // On Enter or after a short typing pause: spawn search thread
-        imp.search_entry.connect_activate({
-            let tx = tx.clone();
-            move |entry| {
-                let query = entry.text().to_string();
-                if query.is_empty() { return; }
-                let tx = tx.clone();
-                std::thread::spawn(move || {
-                    let results = crate::geocoding::search(&query);
-                    let _ = tx.send(results);
-                });
-            }
-        });
-
-        // Search-as-you-type: debounce 400ms so we don't hammer the API on every keystroke.
-        // Generation counter approach: bump gen on each keystroke; only the latest timer fires.
-        let search_gen: std::rc::Rc<std::cell::Cell<u64>> =
-            std::rc::Rc::new(std::cell::Cell::new(0));
-        imp.search_entry.connect_changed({
-            let tx = tx.clone();
-            let search_gen = search_gen.clone();
-            move |entry| {
-                let query = entry.text().to_string();
-                if query.len() < 3 { return; }
-                let gen = search_gen.get() + 1;
-                search_gen.set(gen);
-                let tx = tx.clone();
-                let search_gen2 = search_gen.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
-                    if search_gen2.get() != gen { return; }
-                    std::thread::spawn(move || {
-                        let results = crate::geocoding::search(&query);
-                        let _ = tx.send(results);
-                    });
-                });
-            }
-        });
-
-        // Poll for results on the main loop; update popover when they arrive
-        glib::timeout_add_local(std::time::Duration::from_millis(100), {
-            let rx = rx.clone();
-            let list_box = list_box.clone();
-            let popover = popover.clone();
-            let window_weak = self.downgrade();
-            move || {
-                if let Ok(results) = rx.lock().unwrap().try_recv() {
-                    // Clear old rows
-                    while let Some(child) = list_box.first_child() {
-                        list_box.remove(&child);
+                    if let Some(layer) = imp.marker_layer.borrow().as_ref() {
+                        layer.remove_all();
+                        let marker = shumate::Marker::new();
+                        let img = gtk::Image::builder()
+                            .icon_name("map-marker-symbolic")
+                            .pixel_size(32)
+                            .build();
+                        img.add_css_class("accent");
+                        marker.set_child(Some(&img));
+                        marker.set_location(lat, lon);
+                        layer.add_marker(&marker);
                     }
 
-                    if let Some(window) = window_weak.upgrade() {
-                        *window.imp().current_results.borrow_mut() = results.clone();
-                    }
-
-                    if results.is_empty() {
-                        popover.popdown();
-                    } else {
-                        for feat in &results {
-                            let row = gtk::ListBoxRow::new();
-                            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                            hbox.set_margin_start(12);
-                            hbox.set_margin_end(12);
-                            hbox.set_margin_top(8);
-                            hbox.set_margin_bottom(8);
-
-                            let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
-                            vbox.set_hexpand(true);
-
-                            let name = gtk::Label::builder()
-                                .label(&feat.name)
-                                .xalign(0.0)
-                                .ellipsize(gtk::pango::EllipsizeMode::End)
-                                .build();
-
-                            let subtitle = gtk::Label::builder()
-                                .label(&feat.subtitle)
-                                .xalign(0.0)
-                                .ellipsize(gtk::pango::EllipsizeMode::End)
-                                .build();
-                            subtitle.add_css_class("caption");
-                            subtitle.add_css_class("dim-label");
-
-                            vbox.append(&name);
-                            vbox.append(&subtitle);
-
-                            hbox.append(&vbox);
-                            row.set_child(Some(&hbox));
-                            list_box.append(&row);
-                        }
-                        popover.popup();
-                    }
+                    window.request_route_preview((lat, lon), dest_name);
                 }
-                glib::ControlFlow::Continue
-            }
-        });
+            },
+        );
+    }
 
-        // On row tap: pan map, place marker, and fetch route preview
-        list_box.connect_row_activated({
-            let popover = popover.clone();
+    fn setup_planner(&self) {
+        let imp = self.imp();
+
+        // Close button — untoggle the directions button to collapse the panel
+        imp.planner_close_button.connect_clicked({
             let window_weak = self.downgrade();
-            move |_, row| {
+            move |_| {
                 let Some(window) = window_weak.upgrade() else { return };
                 let imp = window.imp();
-                let results = imp.current_results.borrow();
-                let Some(feat) = results.get(row.index() as usize) else { return };
-                let (lat, lon) = (feat.lat, feat.lon);
-                let dest_name = feat.name.clone();
-                drop(results);
+                imp.directions_button.set_active(false);
+                imp.planner_revealer.set_reveal_child(false);
+            }
+        });
 
-                // Pan map
-                let viewport = imp.map.viewport().expect("no viewport");
-                viewport.set_zoom_level(14.0);
-                viewport.set_location(lat, lon);
-
-                // Replace marker
-                if let Some(layer) = imp.marker_layer.borrow().as_ref() {
-                    layer.remove_all();
-                    let marker = shumate::Marker::new();
-                    let img = gtk::Image::builder()
-                        .icon_name("map-marker-symbolic")
-                        .pixel_size(32)
-                        .build();
-                    img.add_css_class("accent");
-                    marker.set_child(Some(&img));
-                    marker.set_location(lat, lon);
-                    layer.add_marker(&marker);
+        // Toggle planner panel visibility
+        imp.directions_button.connect_toggled({
+            let window_weak = self.downgrade();
+            move |btn| {
+                let Some(window) = window_weak.upgrade() else { return };
+                let imp = window.imp();
+                let active = btn.is_active();
+                imp.planner_revealer.set_reveal_child(active);
+                // Hide route preview and nav banner when opening planner
+                if active {
+                    imp.route_preview_revealer.set_reveal_child(false);
                 }
+            }
+        });
 
-                popover.popdown();
+        // From entry: geocode → store planner_from_coords
+        attach_geocoding_popover(
+            self,
+            &imp.planner_from_entry.get(),
+            {
+                let window_weak = self.downgrade();
+                move |feat| {
+                    let Some(window) = window_weak.upgrade() else { return };
+                    let imp = window.imp();
+                    *imp.planner_from_coords.borrow_mut() = Some((feat.lat, feat.lon));
+                    imp.planner_from_entry.set_text(&feat.name);
+                }
+            },
+        );
 
-                // Fetch route and show preview panel
-                window.request_route_preview((lat, lon), dest_name);
+        // To entry: geocode → store planner_to_coords + name
+        attach_geocoding_popover(
+            self,
+            &imp.planner_to_entry.get(),
+            {
+                let window_weak = self.downgrade();
+                move |feat| {
+                    let Some(window) = window_weak.upgrade() else { return };
+                    let imp = window.imp();
+                    *imp.planner_to_coords.borrow_mut() = Some((feat.lat, feat.lon));
+                    *imp.planner_to_name.borrow_mut() = feat.name.clone();
+                    imp.planner_to_entry.set_text(&feat.name);
+
+                    // Pan map to destination
+                    let viewport = imp.map.viewport().expect("no viewport");
+                    viewport.set_zoom_level(14.0);
+                    viewport.set_location(feat.lat, feat.lon);
+                }
+            },
+        );
+
+        // "Get Directions" button
+        imp.planner_go_button.connect_clicked({
+            let window_weak = self.downgrade();
+            move |_| {
+                let Some(window) = window_weak.upgrade() else { return };
+                let imp = window.imp();
+
+                // Resolve origin: explicit From entry or current GPS location
+                let origin = imp.planner_from_coords.borrow()
+                    .or_else(|| *imp.current_location.borrow());
+
+                let Some(origin) = origin else {
+                    // Show a subtle indicator in the From field
+                    imp.planner_from_entry.add_css_class("error");
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(2), {
+                        let entry = imp.planner_from_entry.get();
+                        move || { entry.remove_css_class("error"); }
+                    });
+                    return;
+                };
+
+                let Some(dest) = *imp.planner_to_coords.borrow() else {
+                    imp.planner_to_entry.add_css_class("error");
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(2), {
+                        let entry = imp.planner_to_entry.get();
+                        move || { entry.remove_css_class("error"); }
+                    });
+                    return;
+                };
+
+                let dest_name = imp.planner_to_name.borrow().clone();
+
+                // Close planner, show route preview
+                imp.directions_button.set_active(false);
+
+                window.request_route_preview_from(origin, dest, dest_name);
             }
         });
     }
 
-    /// Fetch a route to `destination`, draw it on the map, then show the route preview panel.
+    /// Fetch a route to `destination` using current GPS location as origin.
     fn request_route_preview(&self, destination: (f64, f64), dest_name: String) {
         let imp = self.imp();
         let origin = match *imp.current_location.borrow() {
@@ -577,11 +573,28 @@ impl LociWindow {
                 return;
             }
         };
+        self.request_route_preview_from(origin, destination, dest_name);
+    }
 
-        // Show destination name immediately; distance/time fill in when route arrives
+    /// Fetch a route from `origin` to `destination`, draw it, and show the route preview panel.
+    /// Works without GPS — origin can be any geocoded coordinate.
+    fn request_route_preview_from(&self, origin: (f64, f64), destination: (f64, f64), dest_name: String) {
+        let imp = self.imp();
+
+        // Show destination name and loading state immediately
         imp.route_dest_label.set_text(&dest_name);
         imp.route_distance_label.set_text("…");
         imp.route_time_label.set_text("");
+
+        // Disable Start if no GPS — navigation requires a real position fix
+        let has_gps = imp.current_location.borrow().is_some();
+        imp.route_start_button.set_sensitive(has_gps);
+        imp.route_start_button.set_tooltip_text(if has_gps {
+            Some("Start Navigation")
+        } else {
+            Some("GPS required for navigation")
+        });
+
         imp.route_preview_revealer.set_reveal_child(true);
 
         let (tx, rx) = std::sync::mpsc::channel::<ferrostar::models::Route>();
@@ -769,7 +782,7 @@ impl LociWindow {
                     .or_else(|| {
                         let prev = imp.last_nav_pos.borrow().clone();
                         prev.and_then(|(prev_lat, prev_lon)| {
-                            let dist = haversine_m(prev_lat, prev_lon, lat, lon);
+                            let dist = haversine(prev_lat, prev_lon, lat, lon);
                             if dist >= MIN_BEARING_DIST {
                                 let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
                                 eprintln!("[nav] heading: computed {bearing:.1}° ({dist:.0}m delta)");
@@ -879,7 +892,7 @@ impl LociWindow {
                 // We only update rotation when we've moved enough to get a meaningful bearing;
                 // while stationary the map simply holds the last known rotation.
                 if let Some((prev_lat, prev_lon)) = prev_nav_pos {
-                    let dist = haversine_m(prev_lat, prev_lon, lat, lon);
+                    let dist = haversine(prev_lat, prev_lon, lat, lon);
                     if dist >= MIN_BEARING_DIST {
                         let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
                         set_heading_target(&imp, bearing);
@@ -1196,8 +1209,174 @@ fn format_duration(seconds: f64) -> String {
     }
 }
 
+/// Attach a Photon geocoding autocomplete popover to any `GtkEntry`-like widget.
+///
+/// `on_select` is called on the main thread when the user taps a result row.
+/// It receives a clone of the selected `PhotonFeature`.
+
+/// Bridge trait so `attach_geocoding_popover` works with both `gtk::SearchEntry`
+/// (activate from `SearchEntryExt`) and `gtk::Entry` (activate from `EntryExt`).
+trait ConnectActivate {
+    fn connect_activate_cb<F: Fn() + 'static>(&self, f: F);
+}
+impl ConnectActivate for gtk::SearchEntry {
+    fn connect_activate_cb<F: Fn() + 'static>(&self, f: F) {
+        self.connect_activate(move |_| f());
+    }
+}
+impl ConnectActivate for gtk::Entry {
+    fn connect_activate_cb<F: Fn() + 'static>(&self, f: F) {
+        gtk::prelude::EntryExt::connect_activate(self, move |_| f());
+    }
+}
+
+fn attach_geocoding_popover<E, F>(window: &LociWindow, entry: &E, on_select: F)
+where
+    E: gtk::prelude::EditableExt
+        + gtk::prelude::WidgetExt
+        + ConnectActivate
+        + glib::object::ObjectExt
+        + Clone
+        + 'static,
+    F: Fn(PhotonFeature) + Clone + 'static,
+{
+    let list_box = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+    list_box.add_css_class("boxed-list");
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list_box)
+        .max_content_height(320)
+        .propagate_natural_height(true)
+        .min_content_width(300)
+        .build();
+
+    let popover = gtk::Popover::builder()
+        .child(&scrolled)
+        .has_arrow(false)
+        .position(gtk::PositionType::Bottom)
+        .autohide(true)
+        .can_focus(false)
+        .build();
+    popover.set_parent(entry);
+
+    let results_store: std::rc::Rc<std::cell::RefCell<Vec<PhotonFeature>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<PhotonFeature>>();
+    let rx = Arc::new(Mutex::new(rx));
+
+    // Search on Enter
+    entry.connect_activate_cb({
+        let tx = tx.clone();
+        let entry = entry.clone();
+        move || {
+            let query = entry.text().to_string();
+            if query.is_empty() { return; }
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::geocoding::search(&query));
+            });
+        }
+    });
+
+    // Debounced search-as-you-type
+    let search_gen: std::rc::Rc<std::cell::Cell<u64>> =
+        std::rc::Rc::new(std::cell::Cell::new(0));
+    entry.connect_changed({
+        let tx = tx.clone();
+        let search_gen = search_gen.clone();
+        let entry = entry.clone();
+        move |_| {
+            let query = entry.text().to_string();
+            if query.len() < 3 { return; }
+            let gen = search_gen.get() + 1;
+            search_gen.set(gen);
+            let tx = tx.clone();
+            let sg = search_gen.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                if sg.get() != gen { return; }
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(crate::geocoding::search(&query));
+                });
+            });
+        }
+    });
+
+    // Poll loop: fill popover when results arrive
+    glib::timeout_add_local(std::time::Duration::from_millis(100), {
+        let list_box = list_box.clone();
+        let popover = popover.clone();
+        let results_store = results_store.clone();
+        move || {
+            if let Ok(results) = rx.lock().unwrap().try_recv() {
+                while let Some(child) = list_box.first_child() {
+                    list_box.remove(&child);
+                }
+                *results_store.borrow_mut() = results.clone();
+                if results.is_empty() {
+                    popover.popdown();
+                } else {
+                    for feat in &results {
+                        let row = gtk::ListBoxRow::new();
+                        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                        hbox.set_margin_start(12);
+                        hbox.set_margin_end(12);
+                        hbox.set_margin_top(8);
+                        hbox.set_margin_bottom(8);
+
+                        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                        vbox.set_hexpand(true);
+
+                        let name_lbl = gtk::Label::builder()
+                            .label(&feat.name)
+                            .xalign(0.0)
+                            .ellipsize(gtk::pango::EllipsizeMode::End)
+                            .build();
+                        let sub_lbl = gtk::Label::builder()
+                            .label(&feat.subtitle)
+                            .xalign(0.0)
+                            .ellipsize(gtk::pango::EllipsizeMode::End)
+                            .build();
+                        sub_lbl.add_css_class("caption");
+                        sub_lbl.add_css_class("dim-label");
+
+                        vbox.append(&name_lbl);
+                        vbox.append(&sub_lbl);
+                        hbox.append(&vbox);
+                        row.set_child(Some(&hbox));
+                        list_box.append(&row);
+                    }
+                    popover.popup();
+                }
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+
+    // On row tap: call the user's callback
+    list_box.connect_row_activated({
+        let popover = popover.clone();
+        let results_store = results_store.clone();
+        move |_, row| {
+            let results = results_store.borrow();
+            if let Some(feat) = results.get(row.index() as usize) {
+                let feat = feat.clone();
+                drop(results);
+                popover.popdown();
+                on_select(feat);
+            }
+        }
+    });
+
+    // Keep the popover alive by attaching it to the window
+    let _ = window;
+}
+
 /// Haversine distance in metres between two WGS-84 coordinates.
-fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const R: f64 = 6_371_000.0;
     let dlat = (lat2 - lat1).to_radians();
     let dlon = (lon2 - lon1).to_radians();
