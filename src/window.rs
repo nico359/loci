@@ -587,7 +587,7 @@ impl LociWindow {
         let rx = Arc::new(Mutex::new(rx));
 
         std::thread::spawn(move || {
-            match crate::routing::get_route(origin, destination, crate::routing::DEFAULT_VALHALLA_URL, "auto") {
+            match crate::routing::get_route(origin, destination, crate::routing::DEFAULT_OSRM_BASE_URL, "car") {
                 Some(route) => { let _ = tx.send(route); }
                 None => eprintln!("Routing request failed"),
             }
@@ -918,7 +918,7 @@ impl LociWindow {
                             let rr = reroute_result.clone();
                             let from = (lat, lon);
                             std::thread::spawn(move || {
-                                match crate::routing::get_route(from, dest, crate::routing::DEFAULT_VALHALLA_URL, "auto") {
+                                match crate::routing::get_route(from, dest, crate::routing::DEFAULT_OSRM_BASE_URL, "car") {
                                     Some(route) => { *rr.lock().unwrap() = Some(route); }
                                     None => eprintln!("[nav] reroute request failed"),
                                 }
@@ -1014,10 +1014,10 @@ impl LociWindow {
                 eprintln!("[nav] TripState::Navigating — dist_to_maneuver={:.0}m", progress.distance_to_next_maneuver);
                 let text = visual_instruction
                     .as_ref()
-                    .map(|vi| vi.primary_content.text.as_str())
-                    .or_else(|| remaining_steps.first().and_then(|s| s.road_name.as_deref()))
-                    .unwrap_or("Continue")
-                    .to_string();
+                    .map(|vi| vi.primary_content.text.clone())
+                    .or_else(|| remaining_steps.first().map(|s| s.instruction.clone()))
+                    .or_else(|| remaining_steps.first().and_then(|s| s.road_name.clone()))
+                    .unwrap_or_else(|| "Continue".to_string());
                 let icon = maneuver_icon(
                     visual_instruction.as_ref().and_then(|vi| vi.primary_content.maneuver_type),
                     visual_instruction.as_ref().and_then(|vi| vi.primary_content.maneuver_modifier),

@@ -18,71 +18,63 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-use ferrostar::routing_adapters::{
-    RouteAdapter, RouteRequest, WellKnownRouteProvider,
-};
-use ferrostar::models::{GeographicCoordinate, Route, UserLocation, Waypoint, WaypointKind};
-use std::time::SystemTime;
+use ferrostar::routing_adapters::osrm::OsrmResponseParser;
+use ferrostar::routing_adapters::RouteResponseParser;
+use ferrostar::models::Route;
 
-pub const DEFAULT_VALHALLA_URL: &str = "https://valhalla1.openstreetmap.de/route";
+/// Base URL for the OSRM routing service.
+pub const DEFAULT_OSRM_BASE_URL: &str = "https://routing.openstreetmap.de";
 
-/// Request a route from `origin` to `destination` using Valhalla.
+/// Request a route from `origin` to `destination` using OSRM.
+///
+/// `origin` and `destination` are `(lat, lon)` pairs.
+/// The `profile` is the OSRM vehicle profile: `"car"`, `"bike"`, or `"foot"`.
 /// Returns the first Route on success.
 pub fn get_route(
     origin: (f64, f64),
     destination: (f64, f64),
-    valhalla_url: &str,
+    osrm_base_url: &str,
     profile: &str,
 ) -> Option<Route> {
-    let adapter = RouteAdapter::from_well_known_route_provider(
-        WellKnownRouteProvider::Valhalla {
-            endpoint_url: valhalla_url.to_string(),
-            profile: profile.to_string(),
-            options_json: None,
-        },
-    )
-    .ok()?;
+    // OSRM expects coordinates in lon,lat order.
+    let url = format!(
+        "{}/routed-{}/route/v1/driving/{},{};{},{}?overview=full&steps=true&annotations=duration,distance",
+        osrm_base_url.trim_end_matches('/'),
+        profile,
+        origin.1, origin.0,
+        destination.1, destination.0,
+    );
 
-    let user_location = UserLocation {
-        coordinates: GeographicCoordinate {
-            lat: origin.0,
-            lng: origin.1,
-        },
-        horizontal_accuracy: 0.0,
-        course_over_ground: None,
-        timestamp: SystemTime::now(),
-        speed: None,
-    };
+    eprintln!("[routing] GET {url}");
 
-    let waypoints = vec![Waypoint {
-        coordinate: GeographicCoordinate {
-            lat: destination.0,
-            lng: destination.1,
-        },
-        kind: WaypointKind::Break,
-        properties: None,
-    }];
-
-    let route_request = adapter.generate_request(user_location, waypoints).ok()?;
-
-    let response_bytes = match route_request {
-        RouteRequest::HttpPost { url, headers, body } => {
-            let client = reqwest::blocking::Client::new();
-            let mut req = client.post(&url).body(body);
-            for (k, v) in &headers {
-                req = req.header(k, v);
+    let client = reqwest::blocking::Client::new();
+    let bytes = match client.get(&url).send() {
+        Ok(resp) => {
+            let status = resp.status();
+            let bytes = resp.bytes().ok()?;
+            if !status.is_success() {
+                eprintln!("[routing] OSRM error {status}: {}", String::from_utf8_lossy(&bytes));
+                return None;
             }
-            req.send().ok()?.bytes().ok()?
+            bytes
         }
-        RouteRequest::HttpGet { url, headers } => {
-            let client = reqwest::blocking::Client::new();
-            let mut req = client.get(&url);
-            for (k, v) in &headers {
-                req = req.header(k, v);
-            }
-            req.send().ok()?.bytes().ok()?
+        Err(e) => {
+            eprintln!("[routing] HTTP error: {e}");
+            return None;
         }
     };
 
-    adapter.parse_response(response_bytes.to_vec()).ok()?.into_iter().next()
+    eprintln!("[routing] response {} bytes", bytes.len());
+
+    // Standard OSRM uses polyline precision 5.
+    match OsrmResponseParser::new(5).parse_response(bytes.to_vec()) {
+        Ok(routes) => {
+            eprintln!("[routing] parsed {} route(s)", routes.len());
+            routes.into_iter().next()
+        }
+        Err(e) => {
+            eprintln!("[routing] parse error: {e:?}");
+            None
+        }
+    }
 }

@@ -152,7 +152,7 @@ impl LociApplication {
             "Routing",
             None,
             gtk::License::Custom,
-            Some("Turn-by-turn routing provided by <a href=\"https://valhalla.github.io/valhalla/\">Valhalla</a> via <a href=\"https://routing.openstreetmap.de\">routing.openstreetmap.de</a>."),
+            Some("Turn-by-turn routing provided by <a href=\"http://project-osrm.org/\">OSRM</a> via <a href=\"https://routing.openstreetmap.de\">routing.openstreetmap.de</a>."),
         );
 
         about.present(Some(&window));
