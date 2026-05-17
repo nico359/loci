@@ -422,6 +422,7 @@ impl LociWindow {
             .has_arrow(false)
             .position(gtk::PositionType::Bottom)
             .autohide(true)
+            .can_focus(false)
             .build();
         popover.set_parent(&imp.search_entry.get());
 
