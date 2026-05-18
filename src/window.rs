@@ -423,9 +423,12 @@ impl LociWindow {
         let imp = self.imp();
 
         // Main search entry: on select, pan map, place marker, fetch route from GPS origin
+        let suppress_search = std::rc::Rc::new(std::cell::Cell::new(false));
         attach_geocoding_popover(
             self,
             &imp.search_entry.get(),
+            suppress_search, // main search doesn't set_text, flag unused but required
+            None, // no next field → dismiss keyboard after selection
             {
                 let window_weak = self.downgrade();
                 move |feat| {
@@ -487,32 +490,42 @@ impl LociWindow {
             }
         });
 
-        // From entry: geocode → store planner_from_coords
+        // From entry: geocode → store planner_from_coords, then move focus to To entry
+        let suppress_from = std::rc::Rc::new(std::cell::Cell::new(false));
         attach_geocoding_popover(
             self,
             &imp.planner_from_entry.get(),
+            suppress_from.clone(),
+            Some(imp.planner_to_entry.get().upcast::<gtk::Widget>()), // focus To next
             {
                 let window_weak = self.downgrade();
+                let suppress_from = suppress_from.clone();
                 move |feat| {
                     let Some(window) = window_weak.upgrade() else { return };
                     let imp = window.imp();
                     *imp.planner_from_coords.borrow_mut() = Some((feat.lat, feat.lon));
+                    suppress_from.set(true);
                     imp.planner_from_entry.set_text(&feat.name);
                 }
             },
         );
 
-        // To entry: geocode → store planner_to_coords + name
+        // To entry: geocode → store planner_to_coords + name, dismiss keyboard
+        let suppress_to = std::rc::Rc::new(std::cell::Cell::new(false));
         attach_geocoding_popover(
             self,
             &imp.planner_to_entry.get(),
+            suppress_to.clone(),
+            None, // no next field → dismiss keyboard
             {
                 let window_weak = self.downgrade();
+                let suppress_to = suppress_to.clone();
                 move |feat| {
                     let Some(window) = window_weak.upgrade() else { return };
                     let imp = window.imp();
                     *imp.planner_to_coords.borrow_mut() = Some((feat.lat, feat.lon));
                     *imp.planner_to_name.borrow_mut() = feat.name.clone();
+                    suppress_to.set(true);
                     imp.planner_to_entry.set_text(&feat.name);
 
                     // Pan map to destination
@@ -1230,7 +1243,13 @@ impl ConnectActivate for gtk::Entry {
     }
 }
 
-fn attach_geocoding_popover<E, F>(window: &LociWindow, entry: &E, on_select: F)
+fn attach_geocoding_popover<E, F>(
+    window: &LociWindow,
+    entry: &E,
+    suppress: std::rc::Rc<std::cell::Cell<bool>>,
+    next_focus: Option<gtk::Widget>,
+    on_select: F,
+)
 where
     E: gtk::prelude::EditableExt
         + gtk::prelude::WidgetExt
@@ -1256,7 +1275,7 @@ where
         .child(&scrolled)
         .has_arrow(false)
         .position(gtk::PositionType::Bottom)
-        .autohide(true)
+        .autohide(false)
         .can_focus(false)
         .build();
     popover.set_parent(entry);
@@ -1264,8 +1283,52 @@ where
     let results_store: std::rc::Rc<std::cell::RefCell<Vec<PhotonFeature>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
 
+    // True while this entry genuinely has keyboard focus.
+    // Managed exclusively by EventControllerFocus so it's never affected by
+    // transient GTK-internal focus changes caused by popup().
+    let entry_focused: std::rc::Rc<std::cell::Cell<bool>> =
+        std::rc::Rc::new(std::cell::Cell::new(false));
+
+    // True after a result is selected; prevents any in-flight result from
+    // re-opening the popover even if focus hasn't left yet.
+    let suppress_popup: std::rc::Rc<std::cell::Cell<bool>> =
+        std::rc::Rc::new(std::cell::Cell::new(false));
+
     let (tx, rx) = std::sync::mpsc::channel::<Vec<PhotonFeature>>();
     let rx = Arc::new(Mutex::new(rx));
+
+    // search_gen is declared early so the focus controller can increment it
+    // on leave (cancelling any pending debounce timer).
+    let search_gen: std::rc::Rc<std::cell::Cell<u64>> =
+        std::rc::Rc::new(std::cell::Cell::new(0));
+
+    // Track enter/leave explicitly.  On leave: dismiss popover AND increment
+    // search_gen so any still-running debounce timer is cancelled – this
+    // ensures results from a previous typing session never re-open the
+    // popover when focus returns.
+    {
+        let focus_ctrl = gtk::EventControllerFocus::new();
+        focus_ctrl.connect_enter({
+            let ef = entry_focused.clone();
+            move |_| { ef.set(true); }
+        });
+        focus_ctrl.connect_leave({
+            let ef = entry_focused.clone();
+            let popover = popover.clone();
+            let sg = search_gen.clone();
+            let sp = suppress_popup.clone();
+            move |_| {
+                ef.set(false);
+                popover.popdown();
+                // Invalidate any in-flight debounce so stale results are
+                // discarded by the poll loop even after focus returns.
+                sg.set(sg.get() + 1);
+                // Also reset suppress_popup so the entry is ready next time.
+                sp.set(false);
+            }
+        });
+        entry.add_controller(focus_ctrl);
+    }
 
     // Search on Enter
     entry.connect_activate_cb({
@@ -1282,15 +1345,26 @@ where
     });
 
     // Debounced search-as-you-type
-    let search_gen: std::rc::Rc<std::cell::Cell<u64>> =
-        std::rc::Rc::new(std::cell::Cell::new(0));
     entry.connect_changed({
         let tx = tx.clone();
+        let popover = popover.clone();
+        let suppress = suppress.clone();
+        let suppress_popup = suppress_popup.clone();
         let search_gen = search_gen.clone();
         let entry = entry.clone();
         move |_| {
+            // Ignore programmatic text changes (e.g. set_text after selection)
+            if suppress.get() {
+                suppress.set(false);
+                return;
+            }
+            // User is typing again → allow popup again
+            suppress_popup.set(false);
             let query = entry.text().to_string();
-            if query.len() < 3 { return; }
+            if query.len() < 3 {
+                popover.popdown();
+                return;
+            }
             let gen = search_gen.get() + 1;
             search_gen.set(gen);
             let tx = tx.clone();
@@ -1309,9 +1383,16 @@ where
     glib::timeout_add_local(std::time::Duration::from_millis(100), {
         let list_box = list_box.clone();
         let popover = popover.clone();
+        let suppress_popup = suppress_popup.clone();
+        let entry_focused = entry_focused.clone();
         let results_store = results_store.clone();
         move || {
             if let Ok(results) = rx.lock().unwrap().try_recv() {
+                // Only show if the entry currently has focus and no result
+                // was recently selected.
+                if suppress_popup.get() || !entry_focused.get() {
+                    return glib::ControlFlow::Continue;
+                }
                 while let Some(child) = list_box.first_child() {
                     list_box.remove(&child);
                 }
@@ -1356,17 +1437,31 @@ where
         }
     });
 
-    // On row tap: call the user's callback
+    // On row tap: call the user's callback, then manage keyboard focus
     list_box.connect_row_activated({
         let popover = popover.clone();
+        let suppress_popup = suppress_popup.clone();
         let results_store = results_store.clone();
+        let entry = entry.clone();
         move |_, row| {
             let results = results_store.borrow();
             if let Some(feat) = results.get(row.index() as usize) {
                 let feat = feat.clone();
                 drop(results);
+                suppress_popup.set(true); // block any in-flight search from re-opening
                 popover.popdown();
                 on_select(feat);
+                // Move focus: to next field (keeps keyboard open) or dismiss keyboard
+                if let Some(w) = &next_focus {
+                    w.grab_focus();
+                } else {
+                    // Clear window focus → virtual keyboard dismisses
+                    if let Some(root) = entry.root() {
+                        if let Ok(win) = root.downcast::<gtk::Window>() {
+                            gtk::prelude::GtkWindowExt::set_focus(&win, None::<&gtk::Widget>);
+                        }
+                    }
+                }
             }
         }
     });
