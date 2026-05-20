@@ -230,6 +230,36 @@
                     </child>
                   </object>
                 </child>
+                <!-- Transport mode selector -->
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">horizontal</property>
+                    <property name="halign">center</property>
+                    <property name="margin-bottom">8</property>
+                    <style>
+                      <class name="linked"/>
+                    </style>
+                    <child>
+                      <object class="GtkToggleButton" id="route_mode_car_button">
+                        <property name="icon-name">driving-symbolic</property>
+                        <property name="tooltip-text" translatable="yes">Car</property>
+                        <property name="active">true</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkToggleButton" id="route_mode_bike_button">
+                        <property name="icon-name">cycling-symbolic</property>
+                        <property name="tooltip-text" translatable="yes">Bicycle</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkToggleButton" id="route_mode_foot_button">
+                        <property name="icon-name">walking-symbolic</property>
+                        <property name="tooltip-text" translatable="yes">On foot</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
                 <child>
                   <object class="GtkBox">
                     <property name="orientation">horizontal</property>

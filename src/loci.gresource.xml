@@ -18,5 +18,8 @@
     <file alias="maps-direction-roundabout-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-roundabout-symbolic.svg</file>
     <file alias="maps-direction-u-turn-right-symbolic.svg">icons/hicolor/scalable/actions/maps-direction-u-turn-right-symbolic.svg</file>
     <file alias="route-symbolic.svg">icons/hicolor/scalable/actions/route-symbolic.svg</file>
+    <file alias="driving-symbolic.svg">icons/hicolor/scalable/actions/driving-symbolic.svg</file>
+    <file alias="cycling-symbolic.svg">icons/hicolor/scalable/actions/cycling-symbolic.svg</file>
+    <file alias="walking-symbolic.svg">icons/hicolor/scalable/actions/walking-symbolic.svg</file>
   </gresource>
 </gresources>

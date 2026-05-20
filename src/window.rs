@@ -66,6 +66,12 @@ mod imp {
         #[template_child]
         pub route_cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub route_mode_car_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub route_mode_bike_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub route_mode_foot_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
         pub directions_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub planner_revealer: TemplateChild<gtk::Revealer>,
@@ -92,6 +98,12 @@ mod imp {
         // Pending route: stored after fetch, before user taps "Start"
         pub pending_route: RefCell<Option<ferrostar::models::Route>>,
         pub pending_origin: RefCell<Option<(f64, f64)>>,
+
+        // Currently selected routing profile ("car", "bike", "foot")
+        pub current_profile: RefCell<String>,
+        // Cached preview destination for re-fetching when mode changes
+        pub preview_destination: RefCell<Option<(f64, f64)>>,
+        pub preview_dest_name: RefCell<String>,
 
         // Navigation state shared between the GPS thread and the main loop timer
         pub nav_controller: RefCell<Option<std::sync::Arc<ferrostar::navigation_controller::NavigationController>>>,
@@ -594,6 +606,11 @@ impl LociWindow {
     fn request_route_preview_from(&self, origin: (f64, f64), destination: (f64, f64), dest_name: String) {
         let imp = self.imp();
 
+        // Cache for mode-switch re-fetches
+        *imp.preview_destination.borrow_mut() = Some(destination);
+        *imp.preview_dest_name.borrow_mut() = dest_name.clone();
+        *imp.pending_origin.borrow_mut() = Some(origin);
+
         // Show destination name and loading state immediately
         imp.route_dest_label.set_text(&dest_name);
         imp.route_distance_label.set_text("…");
@@ -610,11 +627,12 @@ impl LociWindow {
 
         imp.route_preview_revealer.set_reveal_child(true);
 
+        let profile = imp.current_profile.borrow().clone();
         let (tx, rx) = std::sync::mpsc::channel::<ferrostar::models::Route>();
         let rx = Arc::new(Mutex::new(rx));
 
         std::thread::spawn(move || {
-            match crate::routing::get_route(origin, destination, crate::routing::DEFAULT_OSRM_BASE_URL, "car") {
+            match crate::routing::get_route(origin, destination, crate::routing::DEFAULT_OSRM_BASE_URL, &profile) {
                 Some(route) => { let _ = tx.send(route); }
                 None => eprintln!("Routing request failed"),
             }
@@ -944,8 +962,9 @@ impl LociWindow {
                         if let Some(dest) = *imp.nav_destination.borrow() {
                             let rr = reroute_result.clone();
                             let from = (lat, lon);
+                            let profile = imp.current_profile.borrow().clone();
                             std::thread::spawn(move || {
-                                match crate::routing::get_route(from, dest, crate::routing::DEFAULT_OSRM_BASE_URL, "car") {
+                                match crate::routing::get_route(from, dest, crate::routing::DEFAULT_OSRM_BASE_URL, &profile) {
                                     Some(route) => { *rr.lock().unwrap() = Some(route); }
                                     None => eprintln!("[nav] reroute request failed"),
                                 }
@@ -961,6 +980,42 @@ impl LociWindow {
 
     fn setup_navigation(&self) {
         let imp = self.imp();
+
+        // Default profile
+        *imp.current_profile.borrow_mut() = "car".to_string();
+
+        // Mode toggle buttons: form a radio group so only one can be active at a time.
+        imp.route_mode_bike_button.set_group(Some(&*imp.route_mode_car_button));
+        imp.route_mode_foot_button.set_group(Some(&*imp.route_mode_car_button));
+
+        let connect_mode_button = |btn: &gtk::ToggleButton, profile: &'static str| {
+            btn.connect_toggled({
+                let window_weak = self.downgrade();
+                move |btn| {
+                    if !btn.is_active() { return; }
+                    let Some(window) = window_weak.upgrade() else { return };
+                    let imp = window.imp();
+                    *imp.current_profile.borrow_mut() = profile.to_string();
+                    // Re-fetch the preview if it is currently visible
+                    let dest = *imp.preview_destination.borrow();
+                    let origin = {
+                        let pending = *imp.pending_origin.borrow();
+                        let current = *imp.current_location.borrow();
+                        pending.or(current)
+                    };
+                    if imp.route_preview_revealer.reveals_child() {
+                        if let (Some(origin), Some(dest)) = (origin, dest) {
+                            let name = imp.preview_dest_name.borrow().clone();
+                            window.request_route_preview_from(origin, dest, name);
+                        }
+                    }
+                }
+            });
+        };
+        connect_mode_button(&imp.route_mode_car_button, "car");
+        connect_mode_button(&imp.route_mode_bike_button, "bike");
+        connect_mode_button(&imp.route_mode_foot_button, "foot");
+
         imp.nav_stop_button.connect_clicked({
             let window_weak = self.downgrade();
             move |_| {
@@ -990,6 +1045,7 @@ impl LociWindow {
                 imp.route_preview_revealer.set_reveal_child(false);
                 *imp.pending_route.borrow_mut() = None;
                 *imp.pending_origin.borrow_mut() = None;
+                *imp.preview_destination.borrow_mut() = None;
                 // Clear drawn route
                 let layer_opt = imp.route_layer.borrow().clone();
                 if let Some(layer) = layer_opt { layer.remove_all(); }
