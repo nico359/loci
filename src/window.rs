@@ -110,8 +110,8 @@ mod imp {
         pub nav_state: std::sync::Arc<std::sync::Mutex<Option<ferrostar::navigation_controller::models::NavState>>>,
         // Last known position used to compute bearing when GPS heading is unavailable
         pub last_nav_pos: RefCell<Option<(f64, f64)>>,
-        // Smoothed heading in degrees (for stable map rotation)
-        pub smoothed_heading: RefCell<Option<f64>>,
+        // Ring buffer of recent positions (up to 4) for vector-averaged heading
+        pub recent_positions: RefCell<Vec<(f64, f64)>>,
         // Screen idle inhibit — held during navigation, dropped to release
         pub idle_inhibit: RefCell<Option<u32>>,
 
@@ -747,7 +747,7 @@ impl LociWindow {
         // Apply chase-camera 3D tilt
         imp.map.add_css_class("navigation-tilt");
         *imp.last_nav_pos.borrow_mut() = None;
-        *imp.smoothed_heading.borrow_mut() = None;
+        imp.recent_positions.borrow_mut().clear();
         *imp.heading_from.borrow_mut() = None;
         *imp.heading_to.borrow_mut() = None;
         *imp.heading_anim_start.borrow_mut() = None;
@@ -893,9 +893,6 @@ impl LociWindow {
                     updated
                 };
 
-                // Capture previous position before updating it (needed for bearing below).
-                let prev_nav_pos = imp.last_nav_pos.borrow().clone();
-
                 // Update location state
                 *imp.current_location.borrow_mut() = Some((lat, lon));
                 *imp.last_nav_pos.borrow_mut() = Some((lat, lon));
@@ -916,17 +913,40 @@ impl LociWindow {
                 };
                 set_anim_target(&imp, dot_pos.0, dot_pos.1);
 
-                // Map rotation: derive bearing from actual position movement only.
-                // The phone compass (GPS heading field) reflects device orientation, which
-                // is unreliable in cars due to magnetic interference from the motor/speakers.
-                // Position-derived bearing IS the direction of travel and is always correct.
-                // We only update rotation when we've moved enough to get a meaningful bearing;
-                // while stationary the map simply holds the last known rotation.
-                if let Some((prev_lat, prev_lon)) = prev_nav_pos {
-                    let dist = haversine(prev_lat, prev_lon, lat, lon);
-                    if dist >= MIN_BEARING_DIST {
-                        let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
-                        set_heading_target(&imp, bearing);
+                // Map rotation: vector-average heading over the last few position samples.
+                // Using multiple deltas (via sin/cos mean) gives a much more stable bearing
+                // than a single-fix delta, which is noisy on typical phone GPS.
+                {
+                    let mut buf = imp.recent_positions.borrow_mut();
+                    buf.push((lat, lon));
+                    if buf.len() > 4 { buf.remove(0); }
+                }
+                let bearings: Vec<f64> = {
+                    let buf = imp.recent_positions.borrow();
+                    buf.windows(2)
+                        .filter_map(|w| {
+                            let dist = haversine(w[0].0, w[0].1, w[1].0, w[1].1);
+                            if dist >= MIN_BEARING_DIST {
+                                Some(compute_bearing(w[0].0, w[0].1, w[1].0, w[1].1))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                };
+                if !bearings.is_empty() {
+                    let (sin_sum, cos_sum) = bearings.iter().fold((0.0_f64, 0.0_f64), |(s, c), &b| {
+                        let r = b.to_radians();
+                        (s + r.sin(), c + r.cos())
+                    });
+                    let avg = (sin_sum.atan2(cos_sum).to_degrees() + 360.0) % 360.0;
+                    // 10° threshold: ignore small jitter, only rotate for meaningful changes
+                    let diff = imp.heading_to.borrow().map(|cur| {
+                        let d = (avg - cur).abs();
+                        if d > 180.0 { 360.0 - d } else { d }
+                    }).unwrap_or(360.0);
+                    if diff >= 10.0 {
+                        set_heading_target(&imp, avg);
                     }
                 }
 
@@ -1064,7 +1084,7 @@ impl LociWindow {
         *imp.pending_route.borrow_mut() = None;
         *imp.pending_origin.borrow_mut() = None;
         *imp.last_nav_pos.borrow_mut() = None;
-        *imp.smoothed_heading.borrow_mut() = None;
+        imp.recent_positions.borrow_mut().clear();
         *imp.heading_from.borrow_mut() = None;
         *imp.heading_to.borrow_mut() = None;
         *imp.heading_anim_start.borrow_mut() = None;
@@ -1202,7 +1222,7 @@ impl LociWindow {
                 let anim_to    = *imp.anim_to.borrow();
 
                 if let (Some(start), Some(from), Some(to)) = (anim_start, anim_from, anim_to) {
-                    let t = (start.elapsed().as_secs_f64() / 1.0_f64).min(1.0);
+                    let t = (start.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
                     let lat = from.0 + (to.0 - from.0) * t;
                     let lon = from.1 + (to.1 - from.1) * t;
 
@@ -1219,7 +1239,7 @@ impl LociWindow {
                             let h_from  = *imp.heading_from.borrow();
                             let h_to    = *imp.heading_to.borrow();
                             if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
-                                let ht_val = (hs.elapsed().as_secs_f64() / 1.0_f64).min(1.0);
+                                let ht_val = (hs.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
                                 // Interpolate shortest angular path
                                 let mut delta = ht - hf;
                                 if delta > 180.0 { delta -= 360.0; }
@@ -1558,7 +1578,7 @@ fn set_anim_target(imp: &imp::LociWindow, lat: f64, lon: f64) {
         match (start, from, to) {
             (Some(s), Some(f), Some(t)) => {
                 let elapsed = s.elapsed().as_secs_f64();
-                let tval = (elapsed / 1.0_f64).min(1.0);
+                let tval = (elapsed / 0.5_f64).min(1.0);
                 (f.0 + (t.0 - f.0) * tval, f.1 + (t.1 - f.1) * tval)
             }
             (_, _, Some(t)) => t,
@@ -1579,7 +1599,7 @@ fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
         let ht = *imp.heading_to.borrow();
         match (hs, hf, ht) {
             (Some(s), Some(f), Some(t)) => {
-                let tval = (s.elapsed().as_secs_f64() / 1.0_f64).min(1.0);
+                let tval = (s.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
                 let mut delta = t - f;
                 if delta > 180.0 { delta -= 360.0; }
                 if delta < -180.0 { delta += 360.0; }
