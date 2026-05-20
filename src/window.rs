@@ -50,6 +50,10 @@ mod imp {
         #[template_child]
         pub nav_stop_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub nav_remaining_distance_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub nav_remaining_time_label: TemplateChild<gtk::Label>,
+        #[template_child]
         pub zoom_in_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub zoom_out_button: TemplateChild<gtk::Button>,
@@ -1079,6 +1083,8 @@ impl LociWindow {
     fn stop_navigation(&self) {
         let imp = self.imp();
         imp.nav_banner_revealer.set_reveal_child(false);
+        imp.nav_remaining_distance_label.set_text("");
+        imp.nav_remaining_time_label.set_text("");
         *imp.nav_controller.borrow_mut() = None;
         *imp.nav_state.lock().unwrap() = None;
         *imp.pending_route.borrow_mut() = None;
@@ -1128,6 +1134,8 @@ impl LociWindow {
                 imp.nav_instruction_label.set_text(&text);
                 imp.nav_distance_label.set_text(&format_distance(progress.distance_to_next_maneuver));
                 imp.nav_maneuver_icon.set_icon_name(Some(icon));
+                imp.nav_remaining_distance_label.set_text(&format_distance(progress.distance_remaining));
+                imp.nav_remaining_time_label.set_text(&format_duration(progress.duration_remaining));
             }
             TripState::Complete { .. } => eprintln!("[nav] TripState::Complete"),
             TripState::Idle { .. } => eprintln!("[nav] TripState::Idle — nav controller did not advance"),
