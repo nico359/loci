@@ -170,6 +170,9 @@ mod imp {
         pub heading_from: RefCell<Option<f64>>,
         pub heading_to: RefCell<Option<f64>>,
         pub heading_anim_start: RefCell<Option<std::time::Instant>>,
+        // Duration (seconds) for the current heading animation, computed proportionally
+        // to the angular delta so small corrections finish quickly (CoMaps-style).
+        pub heading_anim_dur: std::cell::Cell<f64>,
 
         // Rerouting — destination stored so we can re-request a route when off-route
         pub nav_destination: RefCell<Option<(f64, f64)>>,
@@ -957,40 +960,34 @@ impl LociWindow {
                 };
                 push_extrap_fix(&imp, dot_pos.0, dot_pos.1);
 
-                // Map rotation: vector-average heading over the last few position samples.
-                // Using multiple deltas (via sin/cos mean) gives a much more stable bearing
-                // than a single-fix delta, which is noisy on typical phone GPS.
-                {
-                    let mut buf = imp.recent_positions.borrow_mut();
-                    buf.push((lat, lon));
-                    if buf.len() > 4 { buf.remove(0); }
-                }
-                let bearings: Vec<f64> = {
-                    let buf = imp.recent_positions.borrow();
-                    buf.windows(2)
-                        .filter_map(|w| {
-                            let dist = haversine(w[0].0, w[0].1, w[1].0, w[1].1);
-                            if dist >= MIN_BEARING_DIST {
-                                Some(compute_bearing(w[0].0, w[0].1, w[1].0, w[1].1))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                };
-                if !bearings.is_empty() {
-                    let (sin_sum, cos_sum) = bearings.iter().fold((0.0_f64, 0.0_f64), |(s, c), &b| {
-                        let r = b.to_radians();
-                        (s + r.sin(), c + r.cos())
-                    });
-                    let avg = (sin_sum.atan2(cos_sum).to_degrees() + 360.0) % 360.0;
-                    // 10° threshold: ignore small jitter, only rotate for meaningful changes
+                // Map rotation heading: prefer GPS course-over-ground (hardware Doppler,
+                // updates every fix, no smoothing needed) over computed bearing.
+                // When GPS COG is unavailable, fall back to the bearing between the two
+                // most-recent snapped extrapolation fixes.  Using snapped positions avoids
+                // the noise of raw GPS jitter and gives a cleaner direction estimate than
+                // averaging over a larger ring buffer (which introduced ~1–2 s of lag).
+                let map_heading = gps_heading.or_else(|| {
+                    let f0 = *imp.extrap_fix0.borrow();
+                    let f1 = *imp.extrap_fix1.borrow();
+                    if let (Some((lat0, lon0, _)), Some((lat1, lon1, _))) = (f0, f1) {
+                        let dist = haversine(lat0, lon0, lat1, lon1);
+                        if dist >= MIN_BEARING_DIST {
+                            Some(compute_bearing(lat0, lon0, lat1, lon1))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+                if let Some(heading) = map_heading {
                     let diff = imp.heading_to.borrow().map(|cur| {
-                        let d = (avg - cur).abs();
+                        let d = (heading - cur).abs();
                         if d > 180.0 { 360.0 - d } else { d }
                     }).unwrap_or(360.0);
-                    if diff >= 10.0 {
-                        set_heading_target(&imp, avg);
+                    // 5° dead-zone: suppress GPS jitter without hiding real turns
+                    if diff >= 5.0 {
+                        set_heading_target(&imp, heading);
                     }
                 }
 
@@ -1313,7 +1310,8 @@ impl LociWindow {
                         let h_from  = *imp.heading_from.borrow();
                         let h_to    = *imp.heading_to.borrow();
                         if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
-                            let ht_val = (hs.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
+                            let h_dur = imp.heading_anim_dur.get().max(0.05);
+                            let ht_val = (hs.elapsed().as_secs_f64() / h_dur).min(1.0);
                             // Interpolate shortest angular path
                             let mut delta = ht - hf;
                             if delta > 180.0 { delta -= 360.0; }
@@ -1673,15 +1671,19 @@ fn push_extrap_fix(imp: &imp::LociWindow, lat: f64, lon: f64) {
 }
 
 
-/// Captures the current interpolated angle as `heading_from` for seamless transitions.
+/// Set a new heading animation target (degrees clockwise from north).
+/// Duration is proportional to the angular delta, mirroring CoMaps' AngleInterpolator:
+///   duration = 0.75 * |delta_radians| / π
+/// This makes small corrections near-instant and large turns naturally paced.
 fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
+    let dur = imp.heading_anim_dur.get().max(0.05);
     let current = {
         let hs = *imp.heading_anim_start.borrow();
         let hf = *imp.heading_from.borrow();
         let ht = *imp.heading_to.borrow();
         match (hs, hf, ht) {
             (Some(s), Some(f), Some(t)) => {
-                let tval = (s.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
+                let tval = (s.elapsed().as_secs_f64() / dur).min(1.0);
                 let mut delta = t - f;
                 if delta > 180.0 { delta -= 360.0; }
                 if delta < -180.0 { delta += 360.0; }
@@ -1691,6 +1693,13 @@ fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
             _ => heading,
         }
     };
+    // Duration proportional to angular change (CoMaps AngleInterpolator formula)
+    let mut delta = heading - current;
+    if delta > 180.0 { delta -= 360.0; }
+    if delta < -180.0 { delta += 360.0; }
+    let new_dur = (0.75 * delta.abs().to_radians() / std::f64::consts::PI)
+        .clamp(0.05, 0.75);
+    imp.heading_anim_dur.set(new_dur);
     *imp.heading_from.borrow_mut()       = Some(current);
     *imp.heading_to.borrow_mut()         = Some(heading);
     *imp.heading_anim_start.borrow_mut() = Some(std::time::Instant::now());
