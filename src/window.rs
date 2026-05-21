@@ -50,7 +50,9 @@ impl ferrostar::deviation_detection::RouteDeviationDetector for CurrentStepDevia
         if let TripState::Navigating { user_location, remaining_steps, .. } = trip_state {
             if let Some(step) = remaining_steps.first() {
                 let point = Point::from(user_location);
-                let line = step.get_linestring();
+                let line: geo::LineString = step.geometry.iter()
+                    .map(|c| geo::coord! { x: c.lng, y: c.lat })
+                    .collect();
                 if let Some(dist) = ferrostar::algorithms::deviation_from_line(&point, &line) {
                     if dist > self.max_acceptable_deviation {
                         return RouteDeviation::OffRoute { deviation_from_route_line: dist };
@@ -159,6 +161,11 @@ mod imp {
         pub anim_from: RefCell<Option<(f64, f64)>>,
         pub anim_to: RefCell<Option<(f64, f64)>>,
         pub anim_start: RefCell<Option<std::time::Instant>>,
+        // Linear extrapolation buffer: two most-recent GPS fixes with receipt timestamps.
+        // The render timer projects the dot forward beyond the latest fix using the velocity
+        // vector between these two samples (CoMaps-style), eliminating the ~1 s display lag.
+        pub extrap_fix0: RefCell<Option<(f64, f64, std::time::Instant)>>,
+        pub extrap_fix1: RefCell<Option<(f64, f64, std::time::Instant)>>,
         // Heading animation (degrees) for smooth map rotation during navigation
         pub heading_from: RefCell<Option<f64>>,
         pub heading_to: RefCell<Option<f64>>,
@@ -948,7 +955,7 @@ impl LociWindow {
                 } else {
                     (lat, lon)
                 };
-                set_anim_target(&imp, dot_pos.0, dot_pos.1);
+                push_extrap_fix(&imp, dot_pos.0, dot_pos.1);
 
                 // Map rotation: vector-average heading over the last few position samples.
                 // Using multiple deltas (via sin/cos mean) gives a much more stable bearing
@@ -1242,8 +1249,8 @@ impl LociWindow {
                     }
                 }
 
-                // Advance animation toward this new GPS fix
-                set_anim_target(&imp, lat, lon);
+                // Update extrapolation buffer for the location dot
+                push_extrap_fix(&imp, lat, lon);
                 glib::ControlFlow::Continue
             }
         });
@@ -1258,36 +1265,61 @@ impl LociWindow {
                 };
                 let imp = window.imp();
 
-                let anim_start = *imp.anim_start.borrow();
-                let anim_from  = *imp.anim_from.borrow();
-                let anim_to    = *imp.anim_to.borrow();
+                // Compute display position via linear extrapolation (CoMaps-style).
+                // We project the dot forward from the last GPS fix using the velocity
+                // between the two most-recent fixes, so it continuously advances rather
+                // than waiting for the next fix.  Safety limits mirror CoMaps:
+                //   • interval between fixes must be 50 ms–2.1 s
+                //   • extrapolation window capped at 2 s
+                //   • maximum extrapolation distance 100 m (prevents runaway on bad data)
+                let fix0 = *imp.extrap_fix0.borrow();
+                let fix1 = *imp.extrap_fix1.borrow();
 
-                if let (Some(start), Some(from), Some(to)) = (anim_start, anim_from, anim_to) {
-                    let t = (start.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
-                    let lat = from.0 + (to.0 - from.0) * t;
-                    let lon = from.1 + (to.1 - from.1) * t;
-
-                    if let Some(marker) = imp.location_marker.borrow().as_ref() {
-                        marker.set_location(lat, lon);
-                    }
-
-                    // During navigation also pan the viewport and apply animated heading
-                    if imp.nav_controller.borrow().is_some() {
-                        if let Some(viewport) = imp.map.viewport() {
-                            viewport.set_location(lat, lon);
-
-                            let h_start = *imp.heading_anim_start.borrow();
-                            let h_from  = *imp.heading_from.borrow();
-                            let h_to    = *imp.heading_to.borrow();
-                            if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
-                                let ht_val = (hs.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
-                                // Interpolate shortest angular path
-                                let mut delta = ht - hf;
-                                if delta > 180.0 { delta -= 360.0; }
-                                if delta < -180.0 { delta += 360.0; }
-                                let heading = ((hf + delta * ht_val) + 360.0) % 360.0;
-                                viewport.set_rotation(-heading.to_radians());
+                let pos = if let Some((lat1, lon1, t1)) = fix1 {
+                    if let Some((lat0, lon0, t0)) = fix0 {
+                        let dt_between = (t1 - t0).as_secs_f64();
+                        let dt_after   = t1.elapsed().as_secs_f64();
+                        if dt_between > 0.05 && dt_between < 2.1 && dt_after < 2.0 {
+                            let vel_lat = (lat1 - lat0) / dt_between;
+                            let vel_lon = (lon1 - lon0) / dt_between;
+                            let elat = lat1 + vel_lat * dt_after;
+                            let elon = lon1 + vel_lon * dt_after;
+                            if haversine(lat1, lon1, elat, elon) < 100.0 {
+                                (elat, elon)
+                            } else {
+                                (lat1, lon1)
                             }
+                        } else {
+                            (lat1, lon1)
+                        }
+                    } else {
+                        (lat1, lon1)
+                    }
+                } else {
+                    return glib::ControlFlow::Continue;
+                };
+                let (lat, lon) = pos;
+
+                if let Some(marker) = imp.location_marker.borrow().as_ref() {
+                    marker.set_location(lat, lon);
+                }
+
+                // During navigation also pan the viewport and apply animated heading
+                if imp.nav_controller.borrow().is_some() {
+                    if let Some(viewport) = imp.map.viewport() {
+                        viewport.set_location(lat, lon);
+
+                        let h_start = *imp.heading_anim_start.borrow();
+                        let h_from  = *imp.heading_from.borrow();
+                        let h_to    = *imp.heading_to.borrow();
+                        if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
+                            let ht_val = (hs.elapsed().as_secs_f64() / 0.5_f64).min(1.0);
+                            // Interpolate shortest angular path
+                            let mut delta = ht - hf;
+                            if delta > 180.0 { delta -= 360.0; }
+                            if delta < -180.0 { delta += 360.0; }
+                            let heading = ((hf + delta * ht_val) + 360.0) % 360.0;
+                            viewport.set_rotation(-heading.to_radians());
                         }
                     }
                 }
@@ -1631,7 +1663,16 @@ fn set_anim_target(imp: &imp::LociWindow, lat: f64, lon: f64) {
     *imp.anim_start.borrow_mut() = Some(std::time::Instant::now());
 }
 
-/// Set a new heading animation target (degrees clockwise from north).
+/// Push a new GPS fix into the two-slot linear-extrapolation buffer.
+/// fix0 ← old fix1, fix1 ← (lat, lon, now).
+fn push_extrap_fix(imp: &imp::LociWindow, lat: f64, lon: f64) {
+    let now  = std::time::Instant::now();
+    let prev = *imp.extrap_fix1.borrow();
+    *imp.extrap_fix0.borrow_mut() = prev;
+    *imp.extrap_fix1.borrow_mut() = Some((lat, lon, now));
+}
+
+
 /// Captures the current interpolated angle as `heading_from` for seamless transitions.
 fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
     let current = {
