@@ -27,6 +27,41 @@ use std::sync::{Arc, Mutex};
 
 use crate::geocoding::PhotonFeature;
 
+/// A deviation detector that only checks the *current* route step (index 0 of remaining_steps).
+///
+/// Ferrostar's built-in `StaticThreshold` checks ALL remaining steps, so if you're within
+/// `max_acceptable_deviation` metres of ANY future step (common on urban grids with parallel
+/// streets), it reports `NoDeviation` even when you've clearly departed from the route.
+/// By checking only the current step we avoid these false negatives.
+struct CurrentStepDeviationDetector {
+    max_acceptable_deviation: f64,
+}
+
+impl ferrostar::deviation_detection::RouteDeviationDetector for CurrentStepDeviationDetector {
+    fn check_route_deviation(
+        &self,
+        _route: ferrostar::models::Route,
+        trip_state: ferrostar::navigation_controller::models::TripState,
+    ) -> ferrostar::deviation_detection::RouteDeviation {
+        use ferrostar::deviation_detection::RouteDeviation;
+        use ferrostar::navigation_controller::models::TripState;
+        use geo::Point;
+
+        if let TripState::Navigating { user_location, remaining_steps, .. } = trip_state {
+            if let Some(step) = remaining_steps.first() {
+                let point = Point::from(user_location);
+                let line = step.get_linestring();
+                if let Some(dist) = ferrostar::algorithms::deviation_from_line(&point, &line) {
+                    if dist > self.max_acceptable_deviation {
+                        return RouteDeviation::OffRoute { deviation_from_route_line: dist };
+                    }
+                }
+            }
+        }
+        RouteDeviation::NoDeviation
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -702,9 +737,8 @@ impl LociWindow {
                 distance: 10,
                 minimum_horizontal_accuracy: 50,
             }),
-            route_deviation_tracking: RouteDeviationTracking::StaticThreshold {
-                minimum_horizontal_accuracy: 25,
-                max_acceptable_deviation: 25.0,
+            route_deviation_tracking: RouteDeviationTracking::Custom {
+                detector: Arc::new(CurrentStepDeviationDetector { max_acceptable_deviation: 30.0 }),
             },
             snapped_location_course_filtering: CourseFiltering::Raw,
         };
@@ -853,9 +887,8 @@ impl LociWindow {
                                 distance: 10,
                                 minimum_horizontal_accuracy: 50,
                             }),
-                            route_deviation_tracking: RouteDeviationTracking::StaticThreshold {
-                                minimum_horizontal_accuracy: 25,
-                                max_acceptable_deviation: 25.0,
+                            route_deviation_tracking: RouteDeviationTracking::Custom {
+                                detector: Arc::new(CurrentStepDeviationDetector { max_acceptable_deviation: 30.0 }),
                             },
                             snapped_location_course_filtering: CourseFiltering::Raw,
                         };
