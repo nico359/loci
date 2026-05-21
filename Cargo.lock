@@ -1619,6 +1619,7 @@ dependencies = [
  "ashpd",
  "ferrostar",
  "futures-util",
+ "geo",
  "gettext-rs",
  "gtk4",
  "libadwaita",
