@@ -750,7 +750,7 @@ impl LociWindow {
             route_deviation_tracking: RouteDeviationTracking::Custom {
                 detector: Arc::new(CurrentStepDeviationDetector { max_acceptable_deviation: 30.0 }),
             },
-            snapped_location_course_filtering: CourseFiltering::Raw,
+            snapped_location_course_filtering: CourseFiltering::SnapToRoute,
         };
 
         // Store destination for rerouting (last point in route geometry)
@@ -900,7 +900,7 @@ impl LociWindow {
                             route_deviation_tracking: RouteDeviationTracking::Custom {
                                 detector: Arc::new(CurrentStepDeviationDetector { max_acceptable_deviation: 30.0 }),
                             },
-                            snapped_location_course_filtering: CourseFiltering::Raw,
+                            snapped_location_course_filtering: CourseFiltering::SnapToRoute,
                         };
                         let new_controller = Arc::new(NavigationController::new(new_route.clone(), new_config));
                         let first_state = new_controller.get_initial_state(UserLocation {
@@ -949,24 +949,26 @@ impl LociWindow {
                 // route line, so the dot would hang there instead of following the user.
                 use ferrostar::navigation_controller::models::TripState;
                 use ferrostar::deviation_detection::RouteDeviation;
-                let dot_pos = if let TripState::Navigating { snapped_user_location, deviation, .. } = new_state.trip_state() {
+                let (dot_pos, route_heading) = if let TripState::Navigating { snapped_user_location, deviation, .. } = new_state.trip_state() {
                     match deviation {
-                        RouteDeviation::NoDeviation =>
-                            (snapped_user_location.coordinates.lat, snapped_user_location.coordinates.lng),
-                        RouteDeviation::OffRoute { .. } => (lat, lon),
+                        RouteDeviation::NoDeviation => {
+                            let pos = (snapped_user_location.coordinates.lat, snapped_user_location.coordinates.lng);
+                            // CourseFiltering::SnapToRoute gives us the route-tangent heading
+                            // directly from Ferrostar — perfectly smooth, no GPS noise.
+                            let heading = snapped_user_location.course_over_ground.map(|c| c.degrees as f64);
+                            (pos, heading)
+                        }
+                        RouteDeviation::OffRoute { .. } => ((lat, lon), None),
                     }
                 } else {
-                    (lat, lon)
+                    ((lat, lon), None)
                 };
                 push_extrap_fix(&imp, dot_pos.0, dot_pos.1);
 
-                // Map rotation heading: prefer GPS course-over-ground (hardware Doppler,
-                // updates every fix, no smoothing needed) over computed bearing.
-                // When GPS COG is unavailable, fall back to the bearing between the two
-                // most-recent snapped extrapolation fixes.  Using snapped positions avoids
-                // the noise of raw GPS jitter and gives a cleaner direction estimate than
-                // averaging over a larger ring buffer (which introduced ~1–2 s of lag).
-                let map_heading = gps_heading.or_else(|| {
+                // Map rotation heading.
+                // On-route: use route-tangent from Ferrostar (zero noise, follows road curves).
+                // Off-route or no route heading: fall back to GPS COG or extrap-fix bearing.
+                let map_heading = route_heading.or_else(|| gps_heading).or_else(|| {
                     let f0 = *imp.extrap_fix0.borrow();
                     let f1 = *imp.extrap_fix1.borrow();
                     if let (Some((lat0, lon0, _)), Some((lat1, lon1, _))) = (f0, f1) {
@@ -1641,25 +1643,6 @@ fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// Update the animation target for the location dot.
 /// Takes the current interpolated position as `anim_from` so transitions are seamless
 /// even if the previous animation hadn't completed yet.
-fn set_anim_target(imp: &imp::LociWindow, lat: f64, lon: f64) {
-    let from = {
-        let start = *imp.anim_start.borrow();
-        let from  = *imp.anim_from.borrow();
-        let to    = *imp.anim_to.borrow();
-        match (start, from, to) {
-            (Some(s), Some(f), Some(t)) => {
-                let elapsed = s.elapsed().as_secs_f64();
-                let tval = (elapsed / 0.5_f64).min(1.0);
-                (f.0 + (t.0 - f.0) * tval, f.1 + (t.1 - f.1) * tval)
-            }
-            (_, _, Some(t)) => t,
-            _ => (lat, lon),
-        }
-    };
-    *imp.anim_from.borrow_mut()  = Some(from);
-    *imp.anim_to.borrow_mut()    = Some((lat, lon));
-    *imp.anim_start.borrow_mut() = Some(std::time::Instant::now());
-}
 
 /// Push a new GPS fix into the two-slot linear-extrapolation buffer.
 /// fix0 ← old fix1, fix1 ← (lat, lon, now).
