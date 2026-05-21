@@ -1248,8 +1248,13 @@ impl LociWindow {
                     }
                 }
 
-                // Update extrapolation buffer for the location dot
-                push_extrap_fix(&imp, lat, lon);
+                // Update extrapolation buffer for the location dot.
+                // Skip during navigation — the nav loop already pushes snapped fixes,
+                // and mixing raw GPS into the same two-slot buffer would cause the
+                // interpolated dot to jump between the snapped and raw positions.
+                if imp.nav_controller.borrow().is_none() {
+                    push_extrap_fix(&imp, lat, lon);
+                }
                 glib::ControlFlow::Continue
             }
         });
