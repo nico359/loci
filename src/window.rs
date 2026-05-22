@@ -1318,7 +1318,9 @@ impl LociWindow {
                         let h_to    = *imp.heading_to.borrow();
                         if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
                             let h_dur = imp.heading_anim_dur.get().max(0.05);
-                            let ht_val = (hs.elapsed().as_secs_f64() / h_dur).min(1.0);
+                            let t_linear = (hs.elapsed().as_secs_f64() / h_dur).min(1.0);
+                            // Smoothstep ease-in-out: t²(3−2t) — feels natural for map rotation
+                            let ht_val = t_linear * t_linear * (3.0 - 2.0 * t_linear);
                             // Interpolate shortest angular path
                             let mut delta = ht - hf;
                             if delta > 180.0 { delta -= 360.0; }
@@ -1660,9 +1662,9 @@ fn push_extrap_fix(imp: &imp::LociWindow, lat: f64, lon: f64) {
 
 
 /// Set a new heading animation target (degrees clockwise from north).
-/// Duration is proportional to the angular delta, mirroring CoMaps' AngleInterpolator:
-///   duration = 0.75 * |delta_radians| / π
-/// This makes small corrections near-instant and large turns naturally paced.
+/// Duration = |delta_deg| / 60  → 60°/s rotation speed (90° takes 1.5 s).
+/// Interpolation uses a smoothstep ease-in-out curve so turns accelerate
+/// and decelerate naturally rather than spinning at constant speed.
 fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
     let dur = imp.heading_anim_dur.get().max(0.05);
     let current = {
@@ -1681,12 +1683,14 @@ fn set_heading_target(imp: &imp::LociWindow, heading: f64) {
             _ => heading,
         }
     };
-    // Duration proportional to angular change (CoMaps AngleInterpolator formula)
+    // Duration = delta_deg / 60  → ~60°/s rotation speed.
+    // A 90° turn takes 1.5 s, a 10° correction takes 0.17 s.
+    // Clamped to [0.15 s, 1.5 s] so small corrections finish quickly and
+    // large U-turns don't spin forever.
     let mut delta = heading - current;
-    if delta > 180.0 { delta -= 360.0; }
+    if delta > 180.0  { delta -= 360.0; }
     if delta < -180.0 { delta += 360.0; }
-    let new_dur = (0.75 * delta.abs().to_radians() / std::f64::consts::PI)
-        .clamp(0.05, 0.75);
+    let new_dur = (delta.abs() / 60.0).clamp(0.15, 1.5);
     imp.heading_anim_dur.set(new_dur);
     *imp.heading_from.borrow_mut()       = Some(current);
     *imp.heading_to.borrow_mut()         = Some(heading);
