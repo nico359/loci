@@ -93,7 +93,7 @@ pub fn get_route(
             .unwrap_or_default();
 
         if let Some(route) = routes.first_mut() {
-            for (step, raw) in route.steps.iter_mut().zip(raw_steps.iter()) {
+            for (i, (step, raw)) in route.steps.iter_mut().zip(raw_steps.iter()).enumerate() {
                 let maneuver = &raw["maneuver"];
                 let mtype_str = maneuver["type"].as_str().unwrap_or("");
                 let mmod_str = maneuver["modifier"].as_str().unwrap_or("");
@@ -102,26 +102,38 @@ pub fn get_route(
 
                 let mtype = parse_maneuver_type(mtype_str);
                 let mmod = parse_maneuver_modifier(mmod_str);
-                let text = synthesize_instruction(mtype, mmod, road_name, exit_num);
+                // step.instruction is the maneuver that started this step (already done);
+                // it serves as the fallback label for the current road.
+                step.instruction = synthesize_instruction(mtype, mmod, road_name, exit_num);
 
-                step.instruction = text.clone();
+                // Visual instruction: preview the NEXT step's maneuver, triggered near
+                // the end of the current step.  In OSRM format the maneuver is at the
+                // *start* of each step, so the action the user needs to prepare for
+                // while travelling step[i] is the maneuver that opens step[i+1].
+                if let Some(next_raw) = raw_steps.get(i + 1) {
+                    let nm = &next_raw["maneuver"];
+                    let next_mtype = parse_maneuver_type(nm["type"].as_str().unwrap_or(""));
+                    let next_mmod  = parse_maneuver_modifier(nm["modifier"].as_str().unwrap_or(""));
+                    let next_road  = next_raw["name"].as_str().unwrap_or("").trim();
+                    let next_exit  = nm["exit"].as_u64();
+                    let next_text  = synthesize_instruction(next_mtype, next_mmod, next_road, next_exit);
 
-                // Synthesize a VisualInstruction so the NavigationController can trigger
-                // it at the right distance threshold.
-                let trigger = (step.distance * 0.3).clamp(30.0, 250.0);
-                step.visual_instructions = vec![VisualInstruction {
-                    primary_content: VisualInstructionContent {
-                        text,
-                        maneuver_type: mtype,
-                        maneuver_modifier: mmod,
-                        roundabout_exit_degrees: None,
-                        lane_info: None,
-                        exit_numbers: vec![],
-                    },
-                    secondary_content: None,
-                    sub_content: None,
-                    trigger_distance_before_maneuver: trigger,
-                }];
+                    let trigger = (step.distance * 0.3).clamp(30.0, 250.0);
+                    step.visual_instructions = vec![VisualInstruction {
+                        primary_content: VisualInstructionContent {
+                            text: next_text,
+                            maneuver_type: next_mtype,
+                            maneuver_modifier: next_mmod,
+                            roundabout_exit_degrees: None,
+                            lane_info: None,
+                            exit_numbers: vec![],
+                        },
+                        secondary_content: None,
+                        sub_content: None,
+                        trigger_distance_before_maneuver: trigger,
+                    }];
+                }
+                // Last step (arrive) needs no visual instruction.
             }
         }
     }

@@ -1163,12 +1163,23 @@ impl LociWindow {
                 let text = visual_instruction
                     .as_ref()
                     .map(|vi| vi.primary_content.text.clone())
-                    .or_else(|| remaining_steps.first().map(|s| s.instruction.clone()))
+                    // visual_instruction is None when we're far from the trigger distance.
+                    // Show the next step's instruction as a lookahead ("Turn right onto Oak Ave").
+                    // remaining_steps[0] is the current step; [1] is the upcoming one.
+                    .or_else(|| remaining_steps.get(1).map(|s| s.instruction.clone()))
                     .or_else(|| remaining_steps.first().and_then(|s| s.road_name.clone()))
                     .unwrap_or_else(|| "Continue".to_string());
+                // When the visual_instruction hasn't triggered yet, peek at the current step's
+                // (not-yet-active) visual instruction to get the correct upcoming maneuver icon.
+                let lookahead_vi = remaining_steps.first()
+                    .and_then(|s| s.visual_instructions.first());
                 let icon = maneuver_icon(
-                    visual_instruction.as_ref().and_then(|vi| vi.primary_content.maneuver_type),
-                    visual_instruction.as_ref().and_then(|vi| vi.primary_content.maneuver_modifier),
+                    visual_instruction.as_ref()
+                        .and_then(|vi| vi.primary_content.maneuver_type)
+                        .or_else(|| lookahead_vi.and_then(|vi| vi.primary_content.maneuver_type)),
+                    visual_instruction.as_ref()
+                        .and_then(|vi| vi.primary_content.maneuver_modifier)
+                        .or_else(|| lookahead_vi.and_then(|vi| vi.primary_content.maneuver_modifier)),
                 );
                 imp.nav_instruction_label.set_text(&text);
                 imp.nav_distance_label.set_text(&format_distance(progress.distance_to_next_maneuver));
