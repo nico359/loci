@@ -17,7 +17,15 @@ For informational purposes only. Do not use while driving. Navigation data may b
 -  Routing via the Valhalla and Ferrostar
 -  Screen idle inhibit during navigation
 -  Map rendering (vector) using libshumate like Gnome Maps
- 
+
+## Screenshots
+
+![Map overview](data/map.png)
+![Search](data/search.png)
+![Account page](data/account_page.png)
+![Route planner](data/route_planner.png)
+![Desktop view](data/desktop.png)
+
 ## Credits
 
 Inspired by [Gnome Maps](https://apps.gnome.org/en/Maps/).
