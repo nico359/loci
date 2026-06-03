@@ -9,6 +9,7 @@
   <description>
     <p>Loci is a navigation app designed for mobile Linux devices. It provides turn-by-turn directions with automatic rerouting when you leave the route, map rotation to follow your direction of travel, and a clean interface inspired by GNOME Maps.</p>
     <p>Location is sourced from the XDG Location Portal (GeoClue) and routing from OSRM in combination with Ferrostar. The map snaps the position indicator to the road when on-route. </p>
+    <p>Disclaimer: For informational purposes only. Do not use while driving. Navigation data may be inaccurate or incomplete - never rely solely on this app for navigation or safety-critical decisions.</p>
   </description>
 
   <icon type="stock">io.github.nico359.loci</icon>

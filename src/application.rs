@@ -135,6 +135,13 @@ impl LociApplication {
         );
 
         about.add_legal_section(
+            "Disclaimer",
+            None,
+            gtk::License::Custom,
+            Some("For informational purposes only. Do not use while driving. Navigation data may be inaccurate or incomplete - never rely solely on this app for navigation or safety-critical decisions. No warranty is given for accuracy or fitness for any particular purpose."),
+        );
+
+        about.add_legal_section(
             "Map Data",
             None,
             gtk::License::Custom,

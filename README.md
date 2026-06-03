@@ -2,6 +2,10 @@
 
 Turn-by-turn navigation mostly aimed at Linux phones such as the Pinephone or Furiphone. Please be aware that this app is in very early stages and therefore it is not competitive with something like Pure Maps. While I tested it and you can definetely get from point a to b with Loci, I wouldnt rely on it for now. Also it might be considered AI slop, of course.
 
+## Disclaimer
+
+For informational purposes only. Do not use while driving. Navigation data may be inaccurate or incomplete - never rely solely on this app for navigation or safety-critical decisions. No warranty is given for accuracy or fitness for any particular purpose.
+
 ## Features
 
 -  Turn-by-turn navigation with maneuver instructions
