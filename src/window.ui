@@ -323,7 +323,7 @@
                 <child>
                   <object class="GtkImage" id="nav_maneuver_icon">
                     <property name="icon-name">maps-direction-continue-symbolic</property>
-                    <property name="pixel-size">32</property>
+                    <property name="pixel-size">40</property>
                     <property name="margin-start">12</property>
                   </object>
                 </child>
@@ -331,20 +331,26 @@
                   <object class="GtkBox">
                     <property name="orientation">vertical</property>
                     <property name="hexpand">true</property>
-                    <property name="margin-top">12</property>
-                    <property name="margin-bottom">12</property>
+                    <property name="margin-top">14</property>
+                    <property name="margin-bottom">14</property>
                     <property name="valign">center</property>
                     <child>
                       <object class="GtkLabel" id="nav_instruction_label">
                         <property name="label">Starting navigation…</property>
                         <property name="xalign">0.0</property>
                         <property name="wrap">true</property>
+                        <style>
+                          <class name="title-4"/>
+                        </style>
                       </object>
                     </child>
                     <child>
                       <object class="GtkLabel" id="nav_distance_label">
                         <property name="label"></property>
                         <property name="xalign">0.0</property>
+                        <style>
+                          <class name="body"/>
+                        </style>
                       </object>
                     </child>
                   </object>
@@ -360,7 +366,7 @@
                         <property name="label"></property>
                         <property name="xalign">1.0</property>
                         <style>
-                          <class name="caption"/>
+                          <class name="body"/>
                           <class name="dim-label"/>
                         </style>
                       </object>
@@ -370,7 +376,7 @@
                         <property name="label"></property>
                         <property name="xalign">1.0</property>
                         <style>
-                          <class name="caption"/>
+                          <class name="body"/>
                           <class name="dim-label"/>
                         </style>
                       </object>

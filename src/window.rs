@@ -788,7 +788,7 @@ impl LociWindow {
 
         // Centre map on current position immediately
         if let Some(viewport) = imp.map.viewport() {
-            viewport.set_zoom_level(17.0);
+            viewport.set_zoom_level(16.0);
             viewport.set_location(origin.0, origin.1);
         }
 
