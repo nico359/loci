@@ -37,7 +37,41 @@
   <launchable type="desktop-id">io.github.nico359.loci.desktop</launchable>
   <content_rating type="oars-1.1" />
 
+  <screenshots>
+        <screenshot type="default">
+            <caption>Map overview</caption>
+            <image>https://raw.githubusercontent.com/nico359/loci/refs/heads/main/data/map.png</image>
+        </screenshot>
+        <screenshot>
+            <caption>Search</caption>
+            <image>https://raw.githubusercontent.com/nico359/loci/refs/heads/main/data/search.png</image>
+        </screenshot>
+        <screenshot>
+            <caption>Route planner</caption>
+            <image>https://raw.githubusercontent.com/nico359/loci/refs/heads/main/data/route_planner.png</image>
+        </screenshot>
+        <screenshot>
+            <caption>Desktop view</caption>
+            <image>https://raw.githubusercontent.com/nico359/loci/refs/heads/main/data/desktop.png</image>
+        </screenshot>
+    </screenshots>
+
+
   <releases>
+    <release version="0.2.0" date="2026-06-03">
+      <description translate="no">
+        <p>Some significant changes.</p>
+        <ul>
+          <li>Default tile source is now OpenFreeMap instead of Gnomes tile server</li>
+          <li>Routing is now done by OSRM instead of Valhalla</li>
+          <li>Fixed search bar focus mostly for virtual keyboard on phones</li>
+          <li>Added route planner that works without current location</li>
+          <li>Different transport modes are available now (foot, bike)</li>
+          <li>Improved position animation and heading (still not great but better)</li>
+          <li>Reamining trip distance and time is now shown in the nav banner</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-05-13">
       <description translate="no">
         <p>OpenMapTiles attribution.</p>
