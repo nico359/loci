@@ -125,6 +125,18 @@ mod imp {
         #[template_child]
         pub planner_go_button: TemplateChild<gtk::Button>,
 
+        // Place info panel (shown when a map symbol is tapped)
+        #[template_child]
+        pub place_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub place_name_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub place_subtitle_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub place_navigate_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub place_close_button: TemplateChild<gtk::Button>,
+
         pub marker_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub location_layer: RefCell<Option<shumate::MarkerLayer>>,
         pub route_layer: RefCell<Option<shumate::PathLayer>>,
@@ -179,6 +191,10 @@ mod imp {
         pub last_reroute_at: RefCell<Option<std::time::Instant>>,
         pub is_rerouting: std::cell::Cell<bool>,
         pub reroute_result: std::sync::Arc<std::sync::Mutex<Option<ferrostar::models::Route>>>,
+
+        // Last tapped place from a symbol-clicked event
+        pub tapped_place_coords: RefCell<Option<(f64, f64)>>,
+        pub tapped_place_name: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -203,6 +219,7 @@ mod imp {
             self.obj().setup_map();
             self.obj().setup_geocoding();
             self.obj().setup_planner();
+            self.obj().setup_place_panel();
             self.obj().setup_location();
             self.obj().setup_navigation();
         }
@@ -504,6 +521,16 @@ impl LociWindow {
                         route_layer.set_stroke_color(Some(&gdk::RGBA::new(0.2, 0.5, 1.0, 0.9)));
                         imp.map.add_overlay_layer(&route_layer);
                         *imp.route_layer.borrow_mut() = Some(route_layer);
+
+                        // Wire up symbol tapping — fires when the user taps a POI,
+                        // road label, place name, or house number on the vector map.
+                        imp.map.connect_symbol_clicked(glib::clone!(
+                            #[weak]
+                            window,
+                            move |_, event| {
+                                window.on_symbol_tapped(event);
+                            }
+                        ));
                     }
                     Err(e) => eprintln!("VectorRenderer::new error: {e}"),
                 }
@@ -529,6 +556,84 @@ impl LociWindow {
                 }
             }
         });
+    }
+
+    fn setup_place_panel(&self) {
+        let imp = self.imp();
+
+        imp.place_close_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| { window.imp().place_revealer.set_reveal_child(false); }
+        ));
+
+        imp.place_navigate_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| {
+                let imp = window.imp();
+                let coords = *imp.tapped_place_coords.borrow();
+                let name = imp.tapped_place_name.borrow().clone();
+                if let Some((lat, lon)) = coords {
+                    imp.place_revealer.set_reveal_child(false);
+                    window.request_route_preview((lat, lon), name);
+                }
+            }
+        ));
+    }
+
+    fn on_symbol_tapped(&self, event: &shumate::SymbolEvent) {
+        use shumate::prelude::LocationExt;
+
+        let source_layer = match event.source_layer() {
+            Some(s) => s.to_string(),
+            None => return,
+        };
+
+        let lat = event.latitude();
+        let lon = event.longitude();
+
+        let (name, subtitle) = match source_layer.as_str() {
+            "poi" => {
+                let name = event.tag("name").map(|s| s.to_string()).unwrap_or_default();
+                if name.is_empty() { return; }
+                let class = event.tag("class")
+                    .or_else(|| event.tag("subclass"))
+                    .map(|s| capitalize(s.as_str()))
+                    .unwrap_or_default();
+                (name, class)
+            }
+            "place" => {
+                let name = event.tag("name").map(|s| s.to_string()).unwrap_or_default();
+                if name.is_empty() { return; }
+                let class = event.tag("class").map(|s| capitalize(s.as_str())).unwrap_or_default();
+                (name, class)
+            }
+            "transportation_name" => {
+                let name = event.tag("name").map(|s| s.to_string()).unwrap_or_default();
+                if name.is_empty() { return; }
+                let class = event.tag("class").map(|s| capitalize(s.as_str())).unwrap_or_default();
+                (name, class)
+            }
+            "housenumber" => {
+                let number = event.tag("housenumber").map(|s| s.to_string()).unwrap_or_default();
+                if number.is_empty() { return; }
+                (number, "House number".to_string())
+            }
+            _ => return,
+        };
+
+        let imp = self.imp();
+        imp.place_name_label.set_text(&name);
+        imp.place_subtitle_label.set_text(&subtitle);
+        imp.place_subtitle_label.set_visible(!subtitle.is_empty());
+        *imp.tapped_place_coords.borrow_mut() = Some((lat, lon));
+        *imp.tapped_place_name.borrow_mut() = name.to_owned();
+
+        // Hide other panels to avoid overlap
+        imp.route_preview_revealer.set_reveal_child(false);
+
+        imp.place_revealer.set_reveal_child(true);
     }
 
     fn setup_geocoding(&self) {
@@ -598,6 +703,7 @@ impl LociWindow {
                 // Hide route preview and nav banner when opening planner
                 if active {
                     imp.route_preview_revealer.set_reveal_child(false);
+                    imp.place_revealer.set_reveal_child(false);
                 }
             }
         });
@@ -835,6 +941,7 @@ impl LociWindow {
 
         // Show nav banner and populate with first instruction
         imp.nav_banner_revealer.set_reveal_child(true);
+        imp.place_revealer.set_reveal_child(false);
         Self::update_nav_banner(imp, &first_state);
 
         // Centre map on current position immediately
@@ -1416,6 +1523,16 @@ fn maneuver_icon(
         (_, Some(Mod::SlightRight)) => "maps-direction-slightright-symbolic",
         (_, Some(Mod::UTurn)) => "maps-direction-u-turn-right-symbolic",
         _ => "maps-direction-continue-symbolic",
+    }
+}
+
+/// Capitalises the first letter of `s`, replacing underscores with spaces.
+fn capitalize(s: &str) -> String {
+    let spaced = s.replace('_', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
     }
 }
 

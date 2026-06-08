@@ -53,6 +53,103 @@
             </style>
           </object>
         </child>
+        <!-- Place info panel: slides up when a map symbol is tapped -->
+        <child type="overlay">
+          <object class="GtkRevealer" id="place_revealer">
+            <property name="reveal-child">false</property>
+            <property name="transition-type">slide-up</property>
+            <property name="valign">end</property>
+            <property name="halign">fill</property>
+            <property name="margin-bottom">80</property>
+            <property name="margin-start">16</property>
+            <property name="margin-end">16</property>
+            <child>
+              <object class="GtkBox">
+                <property name="orientation">vertical</property>
+                <property name="spacing">0</property>
+                <style>
+                  <class name="nav-banner"/>
+                </style>
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">horizontal</property>
+                    <property name="spacing">8</property>
+                    <property name="margin-start">16</property>
+                    <property name="margin-end">8</property>
+                    <property name="margin-top">12</property>
+                    <property name="margin-bottom">4</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="icon-name">map-marker-symbolic</property>
+                        <property name="pixel-size">20</property>
+                        <style>
+                          <class name="accent"/>
+                        </style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkBox">
+                        <property name="orientation">vertical</property>
+                        <property name="hexpand">true</property>
+                        <property name="valign">center</property>
+                        <child>
+                          <object class="GtkLabel" id="place_name_label">
+                            <property name="label">Place</property>
+                            <property name="xalign">0.0</property>
+                            <property name="ellipsize">end</property>
+                            <style>
+                              <class name="heading"/>
+                            </style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkLabel" id="place_subtitle_label">
+                            <property name="label"></property>
+                            <property name="xalign">0.0</property>
+                            <property name="ellipsize">end</property>
+                            <style>
+                              <class name="dim-label"/>
+                              <class name="caption"/>
+                            </style>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="place_close_button">
+                        <property name="icon-name">window-close-symbolic</property>
+                        <property name="tooltip-text" translatable="yes">Dismiss</property>
+                        <property name="valign">center</property>
+                        <style>
+                          <class name="flat"/>
+                          <class name="circular"/>
+                        </style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">horizontal</property>
+                    <property name="margin-start">16</property>
+                    <property name="margin-end">16</property>
+                    <property name="margin-bottom">12</property>
+                    <child>
+                      <object class="GtkButton" id="place_navigate_button">
+                        <property name="label" translatable="yes">Navigate here</property>
+                        <property name="hexpand">true</property>
+                        <style>
+                          <class name="suggested-action"/>
+                          <class name="pill"/>
+                        </style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
         <!-- Route planner panel: slides up from bottom when directions button is toggled -->
         <child type="overlay">
           <object class="GtkRevealer" id="planner_revealer">

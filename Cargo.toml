@@ -23,6 +23,7 @@ features = ["v1_7"]
 [dependencies.shumate]
 package = "libshumate"
 version = "0.8"
+features = ["v1_1"]
 
 [profile.release]
 strip = true
