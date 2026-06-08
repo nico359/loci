@@ -22,12 +22,6 @@
   <url type="vcs-browser">https://github.com/nico359/loci</url>
   <url type="bugtracker">https://github.com/nico359/loci/issues</url>
 
-  <recommends>
-    <display_length compare="ge">360</display_length>
-    <control>touch</control>
-    <control>keyboard</control>
-    <control>pointing</control>
-  </recommends>
   <supports>
     <control>touch</control>
     <control>keyboard</control>
@@ -59,6 +53,18 @@
 
 
   <releases>
+    <release version="0.3.0" date="2026-06-08">
+      <description translate="no">
+        <p>Offline mode and map design</p>
+        <ul>
+          <li>There is an offline mode now you can toggle in the menu</li>
+          <li>It uses OSM Scout Server made by rinigus</li>
+          <li>Scout Server gets activated automatically like it does with Pure Maps</li>
+          <li>Made some tweaks to the map design - POIs are now visible and certain road types have been scaled down</li>
+          <li>House numbers, POIs and such can now be selected from the map</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-06-03">
       <description translate="no">
         <p>Some significant changes.</p>
@@ -69,7 +75,7 @@
           <li>Added route planner that works without current location</li>
           <li>Different transport modes are available now (foot, bike)</li>
           <li>Improved position animation and heading (still not great but better)</li>
-          <li>Reamining trip distance and time is now shown in the nav banner</li>
+          <li>Remaining trip distance and time is now shown in the nav banner</li>
         </ul>
       </description>
     </release>
