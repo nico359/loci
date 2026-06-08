@@ -13,6 +13,7 @@ tokio = { version = "1", features = ["full"] }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "location"] }
 ferrostar = { version = "0.49", default-features = false, features = ["std"] }
 geo = "0.31"
+polyline = "0.11"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 
 [dependencies.adw]

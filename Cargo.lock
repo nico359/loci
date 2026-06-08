@@ -1624,6 +1624,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libshumate",
+ "polyline",
  "reqwest",
  "serde",
  "serde_json",

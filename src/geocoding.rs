@@ -53,6 +53,16 @@ impl PhotonFeature {
     }
 }
 
+/// Dispatch to the right geocoder depending on the current map profile.
+/// Blocking — call from a background thread.
+pub fn search_with_profile(query: &str, profile: &str) -> Vec<PhotonFeature> {
+    if profile == "offline" {
+        search_scout(query)
+    } else {
+        search(query)
+    }
+}
+
 /// Search Photon (https://photon.komoot.io) and return up to 5 results.
 /// Blocking — call from a background thread.
 pub fn search(query: &str) -> Vec<PhotonFeature> {
@@ -70,5 +80,41 @@ pub fn search(query: &str) -> Vec<PhotonFeature> {
         .unwrap_or_default()
         .iter()
         .filter_map(PhotonFeature::from_value)
+        .collect()
+}
+
+/// Search OSM Scout Server's local geocoder and return up to 5 results.
+/// Blocking — call from a background thread.
+fn search_scout(query: &str) -> Vec<PhotonFeature> {
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get("http://localhost:8553/v1/search")
+        .query(&[("search", query), ("limit", "5")])
+        .send();
+
+    let items: Vec<serde_json::Value> = response
+        .and_then(|r| r.json::<serde_json::Value>())
+        .ok()
+        .and_then(|v| {
+            // Scout Server wraps results under "results" key in some versions,
+            // or returns a bare array. Handle both.
+            if v.is_array() {
+                v.as_array().cloned()
+            } else {
+                v["results"].as_array().cloned()
+            }
+        })
+        .unwrap_or_default();
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let lat = item["lat"].as_f64()?;
+            let lon = item["lng"].as_f64()?;
+            let name = item["title"].as_str().unwrap_or("").to_owned();
+            if name.is_empty() { return None; }
+            let subtitle = item["admin_region"].as_str().unwrap_or("").to_owned();
+            Some(PhotonFeature { name, subtitle, lat, lon })
+        })
         .collect()
 }

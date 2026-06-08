@@ -20,7 +20,7 @@
 
 use ferrostar::routing_adapters::osrm::OsrmResponseParser;
 use ferrostar::routing_adapters::RouteResponseParser;
-use ferrostar::models::{ManeuverModifier, ManeuverType, Route, VisualInstruction, VisualInstructionContent};
+use ferrostar::models::{BoundingBox, GeographicCoordinate, ManeuverModifier, ManeuverType, Route, RouteStep, VisualInstruction, VisualInstructionContent, Waypoint, WaypointKind};
 
 /// Base URL for the OSRM routing service.
 pub const DEFAULT_OSRM_BASE_URL: &str = "https://routing.openstreetmap.de";
@@ -267,6 +267,215 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+/// Route using OSM Scout Server's Valhalla endpoint (`/v2/route`).
+/// Blocking — call from a background thread.
+pub fn get_route_valhalla(
+    origin: (f64, f64),
+    destination: (f64, f64),
+    profile: &str,
+) -> Option<Route> {
+    // Map loci profile names to Valhalla costing models.
+    let costing = match profile {
+        "bike" => "bicycle",
+        "foot" => "pedestrian",
+        _ => "auto",
+    };
+
+    let body = serde_json::json!({
+        "locations": [
+            {"lat": origin.0, "lon": origin.1, "type": "break"},
+            {"lat": destination.0, "lon": destination.1, "type": "break"}
+        ],
+        "costing": costing,
+        "units": "km"
+    });
+
+    eprintln!("[routing/valhalla] POST http://localhost:8553/v2/route costing={costing}");
+
+    let client = reqwest::blocking::Client::new();
+    let resp = match client
+        .get("http://localhost:8553/v2/route")
+        .query(&[("json", body.to_string())])
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => { eprintln!("[routing/valhalla] HTTP error: {e}"); return None; }
+    };
+
+    let status = resp.status();
+    let bytes = resp.bytes().ok()?;
+    if !status.is_success() {
+        eprintln!("[routing/valhalla] error {status}: {}", String::from_utf8_lossy(&bytes));
+        return None;
+    }
+
+    parse_valhalla_response(&bytes)
+}
+
+/// Dispatcher: selects OSRM or Valhalla based on profile.
+pub fn get_route_with_source(
+    origin: (f64, f64),
+    destination: (f64, f64),
+    map_profile: &str,
+    route_profile: &str,
+) -> Option<Route> {
+    if map_profile == "offline" {
+        get_route_valhalla(origin, destination, route_profile)
+    } else {
+        get_route(origin, destination, DEFAULT_OSRM_BASE_URL, route_profile)
+    }
+}
+
+fn parse_valhalla_response(bytes: &[u8]) -> Option<Route> {
+    let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let trip = &json["trip"];
+
+    // Valhalla uses polyline6 for its encoded shape.
+    let decode_shape = |encoded: &str| -> Vec<GeographicCoordinate> {
+        polyline::decode_polyline(encoded, 6)
+            .unwrap_or_else(|_| geo::LineString::new(vec![]))
+            .into_iter()
+            .map(|c| GeographicCoordinate { lat: c.y, lng: c.x })
+            .collect()
+    };
+
+    // Collect all geometry from all legs.
+    let legs = trip["legs"].as_array()?;
+    let mut all_geometry: Vec<GeographicCoordinate> = Vec::new();
+    let mut all_steps: Vec<RouteStep> = Vec::new();
+    let mut total_distance_m = 0.0_f64;
+
+    for leg in legs {
+        let leg_shape = leg["shape"].as_str().unwrap_or("");
+        let leg_geom = decode_shape(leg_shape);
+
+        let maneuvers = leg["maneuvers"].as_array().cloned().unwrap_or_default();
+        for (i, m) in maneuvers.iter().enumerate() {
+            let begin_idx = m["begin_shape_index"].as_u64().unwrap_or(0) as usize;
+            let end_idx = m["end_shape_index"].as_u64()
+                .unwrap_or_else(|| (leg_geom.len() as u64).saturating_sub(1)) as usize;
+
+            let step_geom: Vec<GeographicCoordinate> = leg_geom
+                .get(begin_idx..=end_idx.min(leg_geom.len().saturating_sub(1)))
+                .unwrap_or(&[])
+                .to_vec();
+
+            // Valhalla gives length in km (with "units":"km").
+            let dist_m = m["length"].as_f64().unwrap_or(0.0) * 1000.0;
+            let duration_s = m["time"].as_f64().unwrap_or(0.0);
+            total_distance_m += dist_m;
+
+            let road_name = m["street_names"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+
+            let instruction_text = m["instruction"].as_str().unwrap_or("").to_owned();
+
+            // Build a single visual instruction triggered at the start of the step.
+            let mtype = valhalla_maneuver_type(m["type"].as_u64().unwrap_or(0));
+            let mmod = valhalla_maneuver_modifier(m["type"].as_u64().unwrap_or(0));
+
+            let content = VisualInstructionContent {
+                text: instruction_text.clone(),
+                maneuver_type: mtype,
+                maneuver_modifier: mmod,
+                roundabout_exit_degrees: None,
+                exit_numbers: vec![],
+                lane_info: None,
+            };
+            let visual = VisualInstruction {
+                primary_content: content,
+                secondary_content: None,
+                sub_content: None,
+                trigger_distance_before_maneuver: dist_m,
+            };
+
+            let _ = i; // suppress unused warning
+            all_steps.push(RouteStep {
+                geometry: step_geom.clone(),
+                distance: dist_m,
+                duration: duration_s,
+                road_name,
+                instruction: instruction_text,
+                visual_instructions: vec![visual],
+                spoken_instructions: vec![],
+                annotations: None,
+                incidents: vec![],
+                exits: vec![],
+                driving_side: None,
+                roundabout_exit_number: None,
+            });
+
+            // Append step geometry to whole-route geometry (avoid duplicate points).
+            if all_geometry.is_empty() {
+                all_geometry.extend_from_slice(&step_geom);
+            } else if let Some(first) = step_geom.first() {
+                let last = all_geometry.last().unwrap();
+                let skip = (last.lat == first.lat && last.lng == first.lng) as usize;
+                all_geometry.extend_from_slice(&step_geom[skip..]);
+            }
+        }
+    }
+
+    if all_geometry.is_empty() { return None; }
+
+    let (min_lat, max_lat, min_lng, max_lng) = all_geometry.iter().fold(
+        (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
+        |(mnlat, mxlat, mnlng, mxlng), c| {
+            (mnlat.min(c.lat), mxlat.max(c.lat), mnlng.min(c.lng), mxlng.max(c.lng))
+        },
+    );
+
+    let waypoints = vec![
+        Waypoint { coordinate: all_geometry.first().copied().unwrap(), kind: WaypointKind::Break, properties: None },
+        Waypoint { coordinate: all_geometry.last().copied().unwrap(), kind: WaypointKind::Break, properties: None },
+    ];
+
+    Some(Route {
+        geometry: all_geometry,
+        bbox: BoundingBox {
+            sw: GeographicCoordinate { lat: min_lat, lng: min_lng },
+            ne: GeographicCoordinate { lat: max_lat, lng: max_lng },
+        },
+        distance: total_distance_m,
+        waypoints,
+        steps: all_steps,
+    })
+}
+
+/// Convert a Valhalla maneuver type integer to a ferrostar ManeuverType.
+/// See https://valhalla.github.io/valhalla/api/turn-by-turn/api-reference/#maneuver-types
+fn valhalla_maneuver_type(t: u64) -> Option<ManeuverType> {
+    match t {
+        1 => Some(ManeuverType::Depart),
+        4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 => Some(ManeuverType::Turn),
+        20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 => Some(ManeuverType::Roundabout),
+        30 => Some(ManeuverType::Merge),
+        31 | 32 => Some(ManeuverType::OnRamp),
+        33 | 34 => Some(ManeuverType::OffRamp),
+        35 => Some(ManeuverType::Fork),
+        37 => Some(ManeuverType::Continue),
+        38 => Some(ManeuverType::EndOfRoad),
+        _ => None,
+    }
+}
+
+/// Map Valhalla maneuver type to a ManeuverModifier (best-effort).
+fn valhalla_maneuver_modifier(t: u64) -> Option<ManeuverModifier> {
+    match t {
+        5 | 21 => Some(ManeuverModifier::SlightRight),
+        6 | 22 => Some(ManeuverModifier::Right),
+        7 | 23 => Some(ManeuverModifier::SharpRight),
+        8 => Some(ManeuverModifier::UTurn),
+        9 | 24 => Some(ManeuverModifier::SharpLeft),
+        10 | 25 => Some(ManeuverModifier::Left),
+        11 | 26 => Some(ManeuverModifier::SlightLeft),
+        _ => None,
     }
 }
 

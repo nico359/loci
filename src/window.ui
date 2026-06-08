@@ -33,6 +33,8 @@
           </object>
         </child>
         <property name="content">
+      <object class="AdwToastOverlay" id="toast_overlay">
+        <property name="child">
       <object class="GtkOverlay" id="overlay">
         <property name="child">
           <object class="ShumateSimpleMap" id="map">
@@ -540,9 +542,23 @@
       </object>
         </property>
       </object>
+        </property>
+      </object>
     </property>
   </template>
   <menu id="primary_menu">
+    <section>
+      <item>
+        <attribute name="label" translatable="yes">Online Maps</attribute>
+        <attribute name="action">win.map-profile</attribute>
+        <attribute name="target">online</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Offline Maps (OSM Scout Server)</attribute>
+        <attribute name="action">win.map-profile</attribute>
+        <attribute name="target">offline</attribute>
+      </item>
+    </section>
     <section>
       <item>
         <attribute name="label" translatable="yes">_Keyboard Shortcuts</attribute>

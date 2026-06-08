@@ -71,6 +71,8 @@ mod imp {
     #[template(resource = "/io/github/nico359/loci/window.ui")]
     pub struct LociWindow {
         #[template_child]
+        pub toast_overlay: TemplateChild<adw::ToastOverlay>,
+        #[template_child]
         pub map: TemplateChild<shumate::SimpleMap>,
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
@@ -195,6 +197,11 @@ mod imp {
         // Last tapped place from a symbol-clicked event
         pub tapped_place_coords: RefCell<Option<(f64, f64)>>,
         pub tapped_place_name: RefCell<String>,
+
+        // Map source profile: "online" (OpenFreeMap) or "offline" (OSM Scout Server)
+        pub map_profile: RefCell<String>,
+        // Whether overlay layers have been added to the map (done once after first renderer)
+        pub map_initialized: std::cell::Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -216,6 +223,7 @@ mod imp {
     impl ObjectImpl for LociWindow {
         fn constructed(&self) {
             self.parent_constructed();
+            self.obj().setup_actions();
             self.obj().setup_map();
             self.obj().setup_geocoding();
             self.obj().setup_planner();
@@ -253,293 +261,6 @@ impl LociWindow {
             return;
         }
 
-        // Fetch the TileJSON from OpenFreeMap to get the current versioned tile URL,
-        // then build a hand-rolled style that only uses expressions libshumate supports.
-        let style_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let slot_writer = Arc::clone(&style_slot);
-        std::thread::spawn(move || {
-            let tile_url = reqwest::blocking::get("https://tiles.openfreemap.org/planet")
-                .and_then(|r| r.json::<serde_json::Value>())
-                .ok()
-                .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()))
-                .unwrap_or_else(|| {
-                    eprintln!("[tiles] TileJSON fetch failed, using fallback");
-                    "https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf".to_owned()
-                });
-
-            let style = serde_json::json!({
-                "version": 8,
-                "name": "Loci",
-                "sources": {
-                    "openmaptiles": {
-                        "type": "vector",
-                        "tiles": [tile_url],
-                        "minzoom": 0,
-                        "maxzoom": 14
-                    }
-                },
-                "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-                "layers": [
-                    // --- Background & land ---
-                    {"id": "background", "type": "background",
-                     "paint": {"background-color": "#f0ebe3"}},
-                    {"id": "landcover-grass", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landcover",
-                     "filter": ["in", "class", "grass", "meadow", "park"],
-                     "paint": {"fill-color": "#d8eeca"}},
-                    {"id": "landcover-forest", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landcover",
-                     "filter": ["==", "class", "forest"],
-                     "paint": {"fill-color": "#c0ddb0"}},
-                    // --- Landuse ---
-                    {"id": "landuse-residential", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landuse",
-                     "filter": ["==", "class", "residential"],
-                     "paint": {"fill-color": "#e8e0d8"}},
-                    {"id": "landuse-commercial", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landuse",
-                     "filter": ["==", "class", "commercial"],
-                     "paint": {"fill-color": "#f0e8d8"}},
-                    {"id": "landuse-industrial", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landuse",
-                     "filter": ["==", "class", "industrial"],
-                     "paint": {"fill-color": "#ded8cc"}},
-                    {"id": "landuse-park", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "landuse",
-                     "filter": ["in", "class", "park", "pitch"],
-                     "paint": {"fill-color": "#d0e8c0"}},
-                    // --- Water ---
-                    {"id": "water-fill", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "water",
-                     "paint": {"fill-color": "#a8d4f0"}},
-                    {"id": "waterway", "type": "line",
-                     "source": "openmaptiles", "source-layer": "waterway",
-                     "paint": {"line-color": "#a8d4f0",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              10, 1, 14, 3]}},
-                    // --- Buildings ---
-                    {"id": "building", "type": "fill",
-                     "source": "openmaptiles", "source-layer": "building",
-                     "minzoom": 13,
-                     "paint": {"fill-color": "#dbd5cc",
-                               "fill-outline-color": "#c0b8b0"}},
-                    // --- Roads ---
-                    {"id": "road-path", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "path", "track"],
-                     "layout": {"line-cap": "round", "line-join": "round"},
-                     "paint": {"line-color": "#d0c8c0", "line-width": 1,
-                               "line-dasharray": [2, 2]}},
-                    {"id": "road-minor-casing", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "minor", "service"],
-                     "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -1},
-                     "paint": {"line-color": "#d8d0c8",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              13, 1.5, 16, 5]}},
-                    {"id": "road-minor", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "minor", "service"],
-                     "layout": {"line-cap": "round", "line-join": "round"},
-                     "paint": {"line-color": "#f0ece4",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              13, 0.5, 16, 3]}},
-                    {"id": "road-secondary-casing", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "secondary", "tertiary"],
-                     "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -2},
-                     "paint": {"line-color": "#d8d0b0",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              10, 1.5, 14, 4, 16, 8]}},
-                    {"id": "road-secondary", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "secondary", "tertiary"],
-                     "layout": {"line-cap": "round", "line-join": "round"},
-                     "paint": {"line-color": "#f8f4e8",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              10, 0.5, 14, 2.5, 16, 6]}},
-                    {"id": "road-primary-casing", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "primary", "trunk"],
-                     "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -3},
-                     "paint": {"line-color": "#d4b86a",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              8, 1.5, 12, 3, 15, 5.5, 17, 10]}},
-                    {"id": "road-primary", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["in", "class", "primary", "trunk"],
-                     "layout": {"line-cap": "round", "line-join": "round"},
-                     "paint": {"line-color": "#fce8a0",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              8, 0.5, 12, 1.5, 15, 3.5, 17, 8]}},
-                    {"id": "road-motorway-casing", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["==", "class", "motorway"],
-                     "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -4},
-                     "paint": {"line-color": "#c87d30",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              6, 1.5, 10, 3, 15, 6, 17, 11]}},
-                    {"id": "road-motorway", "type": "line",
-                     "source": "openmaptiles", "source-layer": "transportation",
-                     "filter": ["==", "class", "motorway"],
-                     "layout": {"line-cap": "round", "line-join": "round"},
-                     "paint": {"line-color": "#e8943a",
-                               "line-width": ["interpolate", ["linear"], ["zoom"],
-                                              6, 0.5, 10, 1.5, 15, 4, 17, 9]}},
-                    // --- Labels ---
-                    {"id": "road-name", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "transportation_name",
-                     "minzoom": 14,
-                     "layout": {
-                         "text-field": ["get", "name"],
-                         "text-size": 11,
-                         "text-font": ["Noto Sans Regular"],
-                         "symbol-placement": "line",
-                         "text-max-angle": 30
-                     },
-                     "paint": {"text-color": "#555",
-                               "text-halo-color": "#fff",
-                               "text-halo-width": 1}},
-                    {"id": "housenumber", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "housenumber",
-                     "minzoom": 17,
-                     "layout": {
-                         "text-field": ["get", "housenumber"],
-                         "text-size": 10,
-                         "text-font": ["Noto Sans Regular"]
-                     },
-                     "paint": {"text-color": "#888",
-                               "text-halo-color": "#fff",
-                               "text-halo-width": 1}},
-                    // Important POIs (rank 1-2: stations, hospitals, airports) from zoom 13
-                    {"id": "poi-important", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "poi",
-                     "minzoom": 13,
-                     "filter": ["<=", "rank", 2],
-                     "layout": {
-                         "text-field": ["get", "name"],
-                         "text-size": 11,
-                         "text-font": ["Noto Sans Bold"],
-                         "text-anchor": "top",
-                         "text-offset": [0, 0.4],
-                         "text-max-width": 8
-                     },
-                     "paint": {"text-color": "#333",
-                               "text-halo-color": "#fff",
-                               "text-halo-width": 1.5}},
-                    // General POIs (supermarkets, restaurants, shops, etc.) from zoom 15
-                    {"id": "poi-label", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "poi",
-                     "minzoom": 15,
-                     "filter": ["<=", "rank", 6],
-                     "layout": {
-                         "text-field": ["get", "name"],
-                         "text-size": 11,
-                         "text-font": ["Noto Sans Regular"],
-                         "text-anchor": "top",
-                         "text-offset": [0, 0.4],
-                         "text-max-width": 7
-                     },
-                     "paint": {"text-color": "#555",
-                               "text-halo-color": "#fff",
-                               "text-halo-width": 1}},
-                    // All named POIs at street level (z16+)
-                    {"id": "poi-detail", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "poi",
-                     "minzoom": 16,
-                     "layout": {
-                         "text-field": ["get", "name"],
-                         "text-size": 10,
-                         "text-font": ["Noto Sans Regular"],
-                         "text-anchor": "top",
-                         "text-offset": [0, 0.4],
-                         "text-max-width": 6
-                     },
-                     "paint": {"text-color": "#666",
-                               "text-halo-color": "#fff",
-                               "text-halo-width": 1}},
-                    {"id": "place-suburb", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "place",
-                     "filter": ["in", "class", "suburb", "quarter", "neighbourhood"],
-                     "minzoom": 13,
-                     "layout": {
-                         "text-field": ["get", "name"],
-                         "text-size": 11,
-                         "text-font": ["Noto Sans Italic"],
-                         "text-transform": "uppercase"
-                     },
-                     "paint": {"text-color": "#888",
-                               "text-halo-color": "#f0ebe3",
-                               "text-halo-width": 1}},
-                    {"id": "place-city", "type": "symbol",
-                     "source": "openmaptiles", "source-layer": "place",
-                     "filter": ["in", "class", "city", "town", "village"],
-                     "layout": {
-                         "text-field": ["get", "name"],
-                         "text-size": ["interpolate", ["linear"], ["zoom"],
-                                       8, 11, 12, 14],
-                         "text-font": ["Noto Sans Bold"]
-                     },
-                     "paint": {"text-color": "#333",
-                               "text-halo-color": "#fff",
-                               "text-halo-width": 2}}
-                ]
-            });
-            *slot_writer.lock().unwrap() = Some(style.to_string());
-        });
-
-        // Poll for the style JSON on the main thread; once it arrives set the map
-        // source first, then create all layers (libshumate requires this ordering).
-        let window = self.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            if let Some(json) = style_slot.lock().unwrap().take() {
-                let imp = window.imp();
-                match shumate::VectorRenderer::new("ofm-tiles", &json) {
-                    Ok(renderer) => {
-                        imp.map.set_map_source(Some(&renderer));
-                        let viewport = imp.map.viewport().expect("SimpleMap has no viewport");
-                        viewport.set_zoom_level(12.0);
-                        viewport.set_location(52.5200, 13.4050);
-
-                        let marker_layer = shumate::MarkerLayer::new(&viewport);
-                        imp.map.add_overlay_layer(&marker_layer);
-                        *imp.marker_layer.borrow_mut() = Some(marker_layer);
-
-                        let location_layer = shumate::MarkerLayer::new(&viewport);
-                        imp.map.add_overlay_layer(&location_layer);
-
-                        let location_marker = shumate::Marker::new();
-                        let dot = gtk::Box::builder().width_request(18).height_request(18).build();
-                        dot.add_css_class("location-dot");
-                        location_marker.set_child(Some(&dot));
-                        location_layer.add_marker(&location_marker);
-                        *imp.location_marker.borrow_mut() = Some(location_marker);
-                        *imp.location_layer.borrow_mut() = Some(location_layer);
-
-                        let route_layer = shumate::PathLayer::new(&viewport);
-                        route_layer.set_stroke_width(5.0);
-                        route_layer.set_stroke_color(Some(&gdk::RGBA::new(0.2, 0.5, 1.0, 0.9)));
-                        imp.map.add_overlay_layer(&route_layer);
-                        *imp.route_layer.borrow_mut() = Some(route_layer);
-
-                        // Wire up symbol tapping — fires when the user taps a POI,
-                        // road label, place name, or house number on the vector map.
-                        imp.map.connect_symbol_clicked(glib::clone!(
-                            #[weak]
-                            window,
-                            move |_, event| {
-                                window.on_symbol_tapped(event);
-                            }
-                        ));
-                    }
-                    Err(e) => eprintln!("VectorRenderer::new error: {e}"),
-                }
-                return glib::ControlFlow::Break;
-            }
-            glib::ControlFlow::Continue
-        });
-
-        // Zoom buttons
         imp.zoom_in_button.connect_clicked({
             let map = imp.map.clone();
             move |_| {
@@ -556,6 +277,197 @@ impl LociWindow {
                 }
             }
         });
+
+        self.start_map_source();
+    }
+
+    fn setup_actions(&self) {
+        let saved_profile = load_map_profile();
+        *self.imp().map_profile.borrow_mut() = saved_profile.clone();
+
+        let map_profile_action = gio::SimpleAction::new_stateful(
+            "map-profile",
+            Some(glib::VariantTy::STRING),
+            &saved_profile.to_variant(),
+        );
+        map_profile_action.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |action, param| {
+                let Some(profile) = param.and_then(|v| v.str()) else { return };
+                action.set_state(&profile.to_variant());
+                *window.imp().map_profile.borrow_mut() = profile.to_string();
+                save_map_profile(profile);
+                window.start_map_source();
+            }
+        ));
+        self.add_action(&map_profile_action);
+    }
+
+    /// Starts loading the map source matching the current profile.
+    fn start_map_source(&self) {
+        let profile = self.imp().map_profile.borrow().clone();
+        if profile == "offline" {
+            self.activate_scout_then_apply();
+        } else {
+            self.start_online_source();
+        }
+    }
+
+    /// Pings OSM Scout Server via D-Bus (which auto-starts it if not running),
+    /// waits for the HTTP endpoint to become ready, then applies the offline renderer.
+    fn activate_scout_then_apply(&self) {
+        // Trigger D-Bus auto-start: sending any call to the service name is enough.
+        // The session D-Bus daemon will launch Scout if it has a service file installed.
+        let conn = gio::bus_get_future(gio::BusType::Session);
+        let window = self.clone();
+        glib::spawn_future_local(async move {
+            if let Ok(bus) = conn.await {
+                // org.freedesktop.DBus.Peer.Ping is available on every D-Bus service
+                // and reliably triggers auto-activation without requiring knowledge of
+                // Scout's application-specific interface.
+                let _ = bus.call_future(
+                    Some("io.github.rinigus.OSMScoutServer"),
+                    "/io/github/rinigus/OSMScoutServer",
+                    "org.freedesktop.DBus.Peer",
+                    "Ping",
+                    None,
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    10_000,
+                ).await;
+            }
+
+            // After D-Bus activation, Scout still needs a moment to bind its HTTP port.
+            // Poll /v1/activate up to ~5 s (50 × 100 ms).
+            let result: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+            let result_writer = Arc::clone(&result);
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    let ok = reqwest::blocking::get("http://localhost:8553/v1/activate")
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+                    if ok {
+                        *result_writer.lock().unwrap() = Some(true);
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                *result_writer.lock().unwrap() = Some(false);
+            });
+
+            glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                if let Some(ok) = result.lock().unwrap().take() {
+                    if ok {
+                        let json = build_style_json(
+                            "http://localhost:8553/v1/mbgl/tile?z={z}&x={x}&y={y}",
+                            "http://localhost:8553/v1/mbgl/glyphs?stack={fontstack}&range={range}",
+                        );
+                        window.apply_renderer(json);
+                    } else {
+                        window.show_toast("OSM Scout Server could not be started");
+                        // Revert menu selection back to online
+                        if let Some(action) = window.lookup_action("map-profile") {
+                            if let Some(a) = action.downcast_ref::<gio::SimpleAction>() {
+                                a.set_state(&"online".to_variant());
+                            }
+                        }
+                        *window.imp().map_profile.borrow_mut() = "online".to_string();
+                        save_map_profile("online");
+                        window.start_online_source();
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        });
+    }
+
+    fn show_toast(&self, message: &str) {
+        let toast = adw::Toast::new(message);
+        self.imp().toast_overlay.add_toast(toast);
+    }
+
+    /// Fetches the TileJSON from OpenFreeMap on a background thread, then applies the renderer.
+    fn start_online_source(&self) {
+        let style_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let slot_writer = Arc::clone(&style_slot);
+        std::thread::spawn(move || {
+            let tile_url = reqwest::blocking::get("https://tiles.openfreemap.org/planet")
+                .and_then(|r| r.json::<serde_json::Value>())
+                .ok()
+                .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()))
+                .unwrap_or_else(|| {
+                    eprintln!("[tiles] TileJSON fetch failed, using fallback");
+                    "https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf".to_owned()
+                });
+            let style = build_style_json(
+                &tile_url,
+                "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+            );
+            *slot_writer.lock().unwrap() = Some(style);
+        });
+
+        let window = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            // Cancel if the user switched to offline before the fetch completed.
+            if window.imp().map_profile.borrow().as_str() != "online" {
+                return glib::ControlFlow::Break;
+            }
+            if let Some(json) = style_slot.lock().unwrap().take() {
+                window.apply_renderer(json);
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Installs a new VectorRenderer and, on the very first call, adds all overlay layers.
+    fn apply_renderer(&self, style_json: String) {
+        let imp = self.imp();
+        match shumate::VectorRenderer::new("loci-tiles", &style_json) {
+            Ok(renderer) => {
+                imp.map.set_map_source(Some(&renderer));
+
+                if !imp.map_initialized.get() {
+                    imp.map_initialized.set(true);
+
+                    let viewport = imp.map.viewport().expect("SimpleMap has no viewport");
+                    viewport.set_zoom_level(12.0);
+                    viewport.set_location(52.5200, 13.4050);
+
+                    let marker_layer = shumate::MarkerLayer::new(&viewport);
+                    imp.map.add_overlay_layer(&marker_layer);
+                    *imp.marker_layer.borrow_mut() = Some(marker_layer);
+
+                    let location_layer = shumate::MarkerLayer::new(&viewport);
+                    imp.map.add_overlay_layer(&location_layer);
+
+                    let location_marker = shumate::Marker::new();
+                    let dot = gtk::Box::builder().width_request(18).height_request(18).build();
+                    dot.add_css_class("location-dot");
+                    location_marker.set_child(Some(&dot));
+                    location_layer.add_marker(&location_marker);
+                    *imp.location_marker.borrow_mut() = Some(location_marker);
+                    *imp.location_layer.borrow_mut() = Some(location_layer);
+
+                    let route_layer = shumate::PathLayer::new(&viewport);
+                    route_layer.set_stroke_width(5.0);
+                    route_layer.set_stroke_color(Some(&gdk::RGBA::new(0.2, 0.5, 1.0, 0.9)));
+                    imp.map.add_overlay_layer(&route_layer);
+                    *imp.route_layer.borrow_mut() = Some(route_layer);
+
+                    imp.map.connect_symbol_clicked(glib::clone!(
+                        #[weak(rename_to = window)]
+                        self,
+                        move |_, event| {
+                            window.on_symbol_tapped(event);
+                        }
+                    ));
+                }
+            }
+            Err(e) => eprintln!("VectorRenderer::new error: {e}"),
+        }
     }
 
     fn setup_place_panel(&self) {
@@ -648,6 +560,12 @@ impl LociWindow {
             None, // no next field → dismiss keyboard after selection
             {
                 let window_weak = self.downgrade();
+                move || window_weak.upgrade()
+                    .map(|w| w.imp().map_profile.borrow().clone())
+                    .unwrap_or_else(|| "online".to_string())
+            },
+            {
+                let window_weak = self.downgrade();
                 move |feat| {
                     let Some(window) = window_weak.upgrade() else { return };
                     let imp = window.imp();
@@ -717,6 +635,12 @@ impl LociWindow {
             Some(imp.planner_to_entry.get().upcast::<gtk::Widget>()), // focus To next
             {
                 let window_weak = self.downgrade();
+                move || window_weak.upgrade()
+                    .map(|w| w.imp().map_profile.borrow().clone())
+                    .unwrap_or_else(|| "online".to_string())
+            },
+            {
+                let window_weak = self.downgrade();
                 let suppress_from = suppress_from.clone();
                 move |feat| {
                     let Some(window) = window_weak.upgrade() else { return };
@@ -735,6 +659,12 @@ impl LociWindow {
             &imp.planner_to_entry.get(),
             suppress_to.clone(),
             None, // no next field → dismiss keyboard
+            {
+                let window_weak = self.downgrade();
+                move || window_weak.upgrade()
+                    .map(|w| w.imp().map_profile.borrow().clone())
+                    .unwrap_or_else(|| "online".to_string())
+            },
             {
                 let window_weak = self.downgrade();
                 let suppress_to = suppress_to.clone();
@@ -834,11 +764,12 @@ impl LociWindow {
         imp.route_preview_revealer.set_reveal_child(true);
 
         let profile = imp.current_profile.borrow().clone();
+        let map_profile = imp.map_profile.borrow().clone();
         let (tx, rx) = std::sync::mpsc::channel::<ferrostar::models::Route>();
         let rx = Arc::new(Mutex::new(rx));
 
         std::thread::spawn(move || {
-            match crate::routing::get_route(origin, destination, crate::routing::DEFAULT_OSRM_BASE_URL, &profile) {
+            match crate::routing::get_route_with_source(origin, destination, &map_profile, &profile) {
                 Some(route) => { let _ = tx.send(route); }
                 None => eprintln!("Routing request failed"),
             }
@@ -1184,8 +1115,9 @@ impl LociWindow {
                             let rr = reroute_result.clone();
                             let from = (lat, lon);
                             let profile = imp.current_profile.borrow().clone();
+                            let map_profile = imp.map_profile.borrow().clone();
                             std::thread::spawn(move || {
-                                match crate::routing::get_route(from, dest, crate::routing::DEFAULT_OSRM_BASE_URL, &profile) {
+                                match crate::routing::get_route_with_source(from, dest, &map_profile, &profile) {
                                     Some(route) => { *rr.lock().unwrap() = Some(route); }
                                     None => eprintln!("[nav] reroute request failed"),
                                 }
@@ -1527,6 +1459,248 @@ fn maneuver_icon(
 }
 
 /// Capitalises the first letter of `s`, replacing underscores with spaces.
+fn map_profile_path() -> std::path::PathBuf {
+    let mut path = glib::user_data_dir();
+    path.push("loci");
+    path.push("map_profile");
+    path
+}
+
+fn load_map_profile() -> String {
+    let raw = std::fs::read_to_string(map_profile_path()).unwrap_or_default();
+    if raw.trim() == "offline" { "offline".to_string() } else { "online".to_string() }
+}
+
+fn save_map_profile(profile: &str) {
+    let path = map_profile_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, profile);
+}
+
+/// Builds the complete Mapbox GL style JSON using the given tile and glyph URLs.
+fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
+    serde_json::json!({
+        "version": 8,
+        "name": "Loci",
+        "sources": {
+            "openmaptiles": {
+                "type": "vector",
+                "tiles": [tile_url],
+                "minzoom": 0,
+                "maxzoom": 14
+            }
+        },
+        "glyphs": glyph_url,
+        "layers": [
+            // --- Background & land ---
+            {"id": "background", "type": "background",
+             "paint": {"background-color": "#f0ebe3"}},
+            {"id": "landcover-grass", "type": "fill",
+             "source": "openmaptiles", "source-layer": "landcover",
+             "filter": ["in", "class", "grass", "meadow", "park"],
+             "paint": {"fill-color": "#d8eeca"}},
+            {"id": "landcover-forest", "type": "fill",
+             "source": "openmaptiles", "source-layer": "landcover",
+             "filter": ["==", "class", "forest"],
+             "paint": {"fill-color": "#c0ddb0"}},
+            // --- Landuse ---
+            {"id": "landuse-residential", "type": "fill",
+             "source": "openmaptiles", "source-layer": "landuse",
+             "filter": ["==", "class", "residential"],
+             "paint": {"fill-color": "#e8e0d8"}},
+            {"id": "landuse-commercial", "type": "fill",
+             "source": "openmaptiles", "source-layer": "landuse",
+             "filter": ["==", "class", "commercial"],
+             "paint": {"fill-color": "#f0e8d8"}},
+            {"id": "landuse-industrial", "type": "fill",
+             "source": "openmaptiles", "source-layer": "landuse",
+             "filter": ["==", "class", "industrial"],
+             "paint": {"fill-color": "#ded8cc"}},
+            {"id": "landuse-park", "type": "fill",
+             "source": "openmaptiles", "source-layer": "landuse",
+             "filter": ["in", "class", "park", "pitch"],
+             "paint": {"fill-color": "#d0e8c0"}},
+            // --- Water ---
+            {"id": "water-fill", "type": "fill",
+             "source": "openmaptiles", "source-layer": "water",
+             "paint": {"fill-color": "#a8d4f0"}},
+            {"id": "waterway", "type": "line",
+             "source": "openmaptiles", "source-layer": "waterway",
+             "paint": {"line-color": "#a8d4f0",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      10, 1, 14, 3]}},
+            // --- Buildings ---
+            {"id": "building", "type": "fill",
+             "source": "openmaptiles", "source-layer": "building",
+             "minzoom": 13,
+             "paint": {"fill-color": "#dbd5cc",
+                       "fill-outline-color": "#c0b8b0"}},
+            // --- Roads ---
+            {"id": "road-path", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "path", "track"],
+             "layout": {"line-cap": "round", "line-join": "round"},
+             "paint": {"line-color": "#d0c8c0", "line-width": 1,
+                       "line-dasharray": [2, 2]}},
+            {"id": "road-minor-casing", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "minor", "service"],
+             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -1},
+             "paint": {"line-color": "#d8d0c8",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      13, 1.5, 16, 5]}},
+            {"id": "road-minor", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "minor", "service"],
+             "layout": {"line-cap": "round", "line-join": "round"},
+             "paint": {"line-color": "#f0ece4",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      13, 0.5, 16, 3]}},
+            {"id": "road-secondary-casing", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "secondary", "tertiary"],
+             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -2},
+             "paint": {"line-color": "#d8d0b0",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      10, 1.5, 14, 4, 16, 8]}},
+            {"id": "road-secondary", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "secondary", "tertiary"],
+             "layout": {"line-cap": "round", "line-join": "round"},
+             "paint": {"line-color": "#f8f4e8",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      10, 0.5, 14, 2.5, 16, 6]}},
+            {"id": "road-primary-casing", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "primary", "trunk"],
+             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -3},
+             "paint": {"line-color": "#d4b86a",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      8, 1.5, 12, 3, 15, 5.5, 17, 10]}},
+            {"id": "road-primary", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["in", "class", "primary", "trunk"],
+             "layout": {"line-cap": "round", "line-join": "round"},
+             "paint": {"line-color": "#fce8a0",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      8, 0.5, 12, 1.5, 15, 3.5, 17, 8]}},
+            {"id": "road-motorway-casing", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["==", "class", "motorway"],
+             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -4},
+             "paint": {"line-color": "#c87d30",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      6, 1.5, 10, 3, 15, 6, 17, 11]}},
+            {"id": "road-motorway", "type": "line",
+             "source": "openmaptiles", "source-layer": "transportation",
+             "filter": ["==", "class", "motorway"],
+             "layout": {"line-cap": "round", "line-join": "round"},
+             "paint": {"line-color": "#e8943a",
+                       "line-width": ["interpolate", ["linear"], ["zoom"],
+                                      6, 0.5, 10, 1.5, 15, 4, 17, 9]}},
+            // --- Labels ---
+            {"id": "road-name", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "transportation_name",
+             "minzoom": 14,
+             "layout": {
+                 "text-field": ["get", "name"],
+                 "text-size": 11,
+                 "text-font": ["Noto Sans Regular"],
+                 "symbol-placement": "line",
+                 "text-max-angle": 30
+             },
+             "paint": {"text-color": "#555",
+                       "text-halo-color": "#fff",
+                       "text-halo-width": 1}},
+            {"id": "housenumber", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "housenumber",
+             "minzoom": 17,
+             "layout": {
+                 "text-field": ["get", "housenumber"],
+                 "text-size": 10,
+                 "text-font": ["Noto Sans Regular"]
+             },
+             "paint": {"text-color": "#888",
+                       "text-halo-color": "#fff",
+                       "text-halo-width": 1}},
+            // Important POIs (rank 1-2: stations, hospitals, airports) from zoom 13
+            {"id": "poi-important", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "poi",
+             "minzoom": 13,
+             "filter": ["<=", "rank", 2],
+             "layout": {
+                 "text-field": ["get", "name"],
+                 "text-size": 11,
+                 "text-font": ["Noto Sans Bold"],
+                 "text-anchor": "top",
+                 "text-offset": [0, 0.4],
+                 "text-max-width": 8
+             },
+             "paint": {"text-color": "#333",
+                       "text-halo-color": "#fff",
+                       "text-halo-width": 1.5}},
+            // General POIs (supermarkets, restaurants, shops, etc.) from zoom 15
+            {"id": "poi-label", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "poi",
+             "minzoom": 15,
+             "filter": ["<=", "rank", 6],
+             "layout": {
+                 "text-field": ["get", "name"],
+                 "text-size": 11,
+                 "text-font": ["Noto Sans Regular"],
+                 "text-anchor": "top",
+                 "text-offset": [0, 0.4],
+                 "text-max-width": 7
+             },
+             "paint": {"text-color": "#555",
+                       "text-halo-color": "#fff",
+                       "text-halo-width": 1}},
+            // All named POIs at street level (z16+)
+            {"id": "poi-detail", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "poi",
+             "minzoom": 16,
+             "layout": {
+                 "text-field": ["get", "name"],
+                 "text-size": 10,
+                 "text-font": ["Noto Sans Regular"],
+                 "text-anchor": "top",
+                 "text-offset": [0, 0.4],
+                 "text-max-width": 6
+             },
+             "paint": {"text-color": "#666",
+                       "text-halo-color": "#fff",
+                       "text-halo-width": 1}},
+            {"id": "place-suburb", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "place",
+             "filter": ["in", "class", "suburb", "quarter", "neighbourhood"],
+             "minzoom": 13,
+             "layout": {
+                 "text-field": ["get", "name"],
+                 "text-size": 11,
+                 "text-font": ["Noto Sans Italic"],
+                 "text-transform": "uppercase"
+             },
+             "paint": {"text-color": "#888",
+                       "text-halo-color": "#f0ebe3",
+                       "text-halo-width": 1}},
+            {"id": "place-city", "type": "symbol",
+             "source": "openmaptiles", "source-layer": "place",
+             "filter": ["in", "class", "city", "town", "village"],
+             "layout": {
+                 "text-field": ["get", "name"],
+                 "text-size": ["interpolate", ["linear"], ["zoom"],
+                               8, 11, 12, 14],
+                 "text-font": ["Noto Sans Bold"]
+             },
+             "paint": {"text-color": "#333",
+                       "text-halo-color": "#fff",
+                       "text-halo-width": 2}}
+        ]
+    }).to_string()
+}
+
 fn capitalize(s: &str) -> String {
     let spaced = s.replace('_', " ");
     let mut chars = spaced.chars();
@@ -1578,11 +1752,12 @@ impl ConnectActivate for gtk::Entry {
     }
 }
 
-fn attach_geocoding_popover<E, F>(
+fn attach_geocoding_popover<E, F, P>(
     window: &LociWindow,
     entry: &E,
     suppress: std::rc::Rc<std::cell::Cell<bool>>,
     next_focus: Option<gtk::Widget>,
+    get_profile: P,
     on_select: F,
 )
 where
@@ -1593,6 +1768,7 @@ where
         + Clone
         + 'static,
     F: Fn(PhotonFeature) + Clone + 'static,
+    P: Fn() -> String + Clone + 'static,
 {
     let list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -1669,12 +1845,14 @@ where
     entry.connect_activate_cb({
         let tx = tx.clone();
         let entry = entry.clone();
+        let get_profile = get_profile.clone();
         move || {
             let query = entry.text().to_string();
             if query.is_empty() { return; }
             let tx = tx.clone();
+            let profile = get_profile();
             std::thread::spawn(move || {
-                let _ = tx.send(crate::geocoding::search(&query));
+                let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile));
             });
         }
     });
@@ -1704,11 +1882,13 @@ where
             search_gen.set(gen);
             let tx = tx.clone();
             let sg = search_gen.clone();
+            let get_profile = get_profile.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
                 if sg.get() != gen { return; }
                 let tx = tx.clone();
+                let profile = get_profile();
                 std::thread::spawn(move || {
-                    let _ = tx.send(crate::geocoding::search(&query));
+                    let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile));
                 });
             });
         }
