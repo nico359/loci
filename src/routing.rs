@@ -376,33 +376,40 @@ fn parse_valhalla_response(bytes: &[u8]) -> Option<Route> {
 
             let instruction_text = m["instruction"].as_str().unwrap_or("").to_owned();
 
-            // Build a single visual instruction triggered at the start of the step.
-            let mtype = valhalla_maneuver_type(m["type"].as_u64().unwrap_or(0));
-            let mmod = valhalla_maneuver_modifier(m["type"].as_u64().unwrap_or(0));
-
-            let content = VisualInstructionContent {
-                text: instruction_text.clone(),
-                maneuver_type: mtype,
-                maneuver_modifier: mmod,
-                roundabout_exit_degrees: None,
-                exit_numbers: vec![],
-                lane_info: None,
+            // Preview the NEXT step's maneuver, triggered near the end of this step —
+            // same pattern as the OSRM fix: maneuver[i] describes what happens at the
+            // START of step[i], so while travelling step[i] the user needs to prepare
+            // for maneuver[i+1].
+            let next_m = maneuvers.get(i + 1);
+            let visual_instructions = if let Some(nm) = next_m {
+                let next_text = nm["instruction"].as_str().unwrap_or("").to_owned();
+                let next_mtype = valhalla_maneuver_type(nm["type"].as_u64().unwrap_or(0));
+                let next_mmod = valhalla_maneuver_modifier(nm["type"].as_u64().unwrap_or(0));
+                let trigger = (dist_m * 0.3).clamp(30.0, 250.0);
+                vec![VisualInstruction {
+                    primary_content: VisualInstructionContent {
+                        text: next_text,
+                        maneuver_type: next_mtype,
+                        maneuver_modifier: next_mmod,
+                        roundabout_exit_degrees: None,
+                        exit_numbers: vec![],
+                        lane_info: None,
+                    },
+                    secondary_content: None,
+                    sub_content: None,
+                    trigger_distance_before_maneuver: trigger,
+                }]
+            } else {
+                vec![]
             };
-            let visual = VisualInstruction {
-                primary_content: content,
-                secondary_content: None,
-                sub_content: None,
-                trigger_distance_before_maneuver: dist_m,
-            };
 
-            let _ = i; // suppress unused warning
             all_steps.push(RouteStep {
                 geometry: step_geom.clone(),
                 distance: dist_m,
                 duration: duration_s,
                 road_name,
                 instruction: instruction_text,
-                visual_instructions: vec![visual],
+                visual_instructions,
                 spoken_instructions: vec![],
                 annotations: None,
                 incidents: vec![],
