@@ -317,20 +317,20 @@ impl LociWindow {
     /// Pings OSM Scout Server via D-Bus (which auto-starts it if not running),
     /// waits for the HTTP endpoint to become ready, then applies the offline renderer.
     fn activate_scout_then_apply(&self) {
-        // Trigger D-Bus auto-start: sending any call to the service name is enough.
-        // The session D-Bus daemon will launch Scout if it has a service file installed.
+        // Trigger D-Bus auto-start and register as a tracked client in one call.
+        // Scout's IdleTracker keeps the server running as long as at least one
+        // D-Bus client is registered. Calling Connect() registers our unique D-Bus
+        // name; Scout then watches NameOwnerChanged and shuts down only after we
+        // disconnect — no periodic keep-alive pings needed.
         let conn = gio::bus_get_future(gio::BusType::Session);
         let window = self.clone();
         glib::spawn_future_local(async move {
             if let Ok(bus) = conn.await {
-                // org.freedesktop.DBus.Peer.Ping is available on every D-Bus service
-                // and reliably triggers auto-activation without requiring knowledge of
-                // Scout's application-specific interface.
                 let _ = bus.call_future(
                     Some("io.github.rinigus.OSMScoutServer"),
                     "/io/github/rinigus/OSMScoutServer",
-                    "org.freedesktop.DBus.Peer",
-                    "Ping",
+                    "io.github.rinigus.OSMScoutServer",
+                    "Connect",
                     None,
                     None,
                     gio::DBusCallFlags::NONE,
