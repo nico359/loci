@@ -459,29 +459,30 @@ fn parse_valhalla_response(bytes: &[u8]) -> Option<Route> {
 /// See https://valhalla.github.io/valhalla/api/turn-by-turn/api-reference/#maneuver-types
 fn valhalla_maneuver_type(t: u64) -> Option<ManeuverType> {
     match t {
-        1 => Some(ManeuverType::Depart),
-        4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 => Some(ManeuverType::Turn),
-        20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 => Some(ManeuverType::Roundabout),
-        30 => Some(ManeuverType::Merge),
-        31 | 32 => Some(ManeuverType::OnRamp),
-        33 | 34 => Some(ManeuverType::OffRamp),
-        35 => Some(ManeuverType::Fork),
-        37 => Some(ManeuverType::Continue),
-        38 => Some(ManeuverType::EndOfRoad),
+        1 | 2 | 3 => Some(ManeuverType::Depart),
+        4 | 5 | 6 => Some(ManeuverType::Arrive),
+        7 | 8 | 17 | 22 => Some(ManeuverType::Continue),
+        9 | 10 | 11 | 14 | 15 | 16 => Some(ManeuverType::Turn),
+        18 | 19 | 20 | 21 => Some(ManeuverType::OffRamp),
+        23 | 24 => Some(ManeuverType::Fork),
+        25 => Some(ManeuverType::Merge),
+        26 => Some(ManeuverType::Roundabout),
+        27 => Some(ManeuverType::ExitRoundabout),
         _ => None,
     }
 }
 
-/// Map Valhalla maneuver type to a ManeuverModifier (best-effort).
+/// Map Valhalla maneuver type integer to a ManeuverModifier.
+/// Numbers from Valhalla's DirectionsLeg_Maneuver_Type protobuf enum.
 fn valhalla_maneuver_modifier(t: u64) -> Option<ManeuverModifier> {
     match t {
-        5 | 21 => Some(ManeuverModifier::SlightRight),
-        6 | 22 => Some(ManeuverModifier::Right),
-        7 | 23 => Some(ManeuverModifier::SharpRight),
-        8 => Some(ManeuverModifier::UTurn),
-        9 | 24 => Some(ManeuverModifier::SharpLeft),
-        10 | 25 => Some(ManeuverModifier::Left),
-        11 | 26 => Some(ManeuverModifier::SlightLeft),
+        9  => Some(ManeuverModifier::SlightRight),
+        10 => Some(ManeuverModifier::Right),
+        11 => Some(ManeuverModifier::SharpRight),
+        12 | 13 => Some(ManeuverModifier::UTurn),
+        14 => Some(ManeuverModifier::SharpLeft),
+        15 => Some(ManeuverModifier::Left),
+        16 => Some(ManeuverModifier::SlightLeft),
         _ => None,
     }
 }
