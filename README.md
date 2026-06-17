@@ -6,25 +6,27 @@ Turn-by-turn navigation mostly aimed at Linux phones such as the Pinephone or Fu
 
 For informational purposes only. Do not use while driving. Navigation data may be inaccurate or incomplete - never rely solely on this app for navigation or safety-critical decisions. No warranty is given for accuracy or fitness for any particular purpose.
 
-## Features
+## Features so far
 
 -  Turn-by-turn navigation with maneuver instructions
+-  Routing via OSRM and Ferrostar (online mode)
+-  Address search via Nominatim geocoding (online mode)
+-  Offline mode using [OSM Scout Server](https://github.com/rinigus/osmscout-server) (also available as Flatpak)
 -  Map rotation following direction of travel (kind of)
 -  Automatic rerouting when off-route
 -  Route snapping - position indicator follows the road
--  Address search via Nominatim geocoding
 -  Location via the XDG Location Portal (GeoClue)
--  Routing via the Valhalla and Ferrostar
 -  Screen idle inhibit during navigation
 -  Map rendering (vector) using libshumate like Gnome Maps
 
 ## Screenshots
 
-![Map overview](data/map.png)
-![Search](data/search.png)
-![Account page](data/account_page.png)
-![Route planner](data/route_planner.png)
-![Desktop view](data/desktop.png)
+<div style="display: flex; flex-wrap: wrap; gap: 20px;">
+  <img src="data/map.png" width="200" style="flex: 1; min-width: 250px;" />
+  <img src="data/search.png" width="200" style="flex: 1; min-width: 250px;" />
+  <img src="data/route_planner.png" width="200" style="flex: 1; min-width: 250px;" />
+  <img src="data/desktop.png" style="flex: 1;" />
+</div>
 
 ## Credits
 
