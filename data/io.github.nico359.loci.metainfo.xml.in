@@ -53,6 +53,16 @@
 
 
   <releases>
+        <release version="0.3.1" date="2026-06-17">
+      <description translate="no">
+        <p>Fixes for offline mode</p>
+        <ul>
+          <li>OSM Scout Server connection is kept alive via DBus now (would previously stop responding after a few minutes)</li>
+          <li>Maneuver icons and Valhalla text instructions are correct for offline mode now</li>
+          <li>Slight tweaks to the placement and design of the icons</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-06-08">
       <description translate="no">
         <p>Offline mode and map design</p>
