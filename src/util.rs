@@ -53,7 +53,7 @@ pub(crate) fn capitalize(s: &str) -> String {
 
 /// Distance units used when formatting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Units {
+pub enum Units {
     #[default]
     Metric,
     Imperial,

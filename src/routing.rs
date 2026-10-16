@@ -18,6 +18,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+use gtk::glib;
 use ferrostar::routing_adapters::osrm::OsrmResponseParser;
 use ferrostar::routing_adapters::RouteResponseParser;
 use ferrostar::models::{BoundingBox, GeographicCoordinate, ManeuverModifier, ManeuverType, Route, RouteStep, VisualInstruction, VisualInstructionContent, Waypoint, WaypointKind};
@@ -66,7 +67,7 @@ pub fn get_route(
         destination.1, destination.0,
     );
 
-    eprintln!("[routing] GET {url}");
+    glib::g_debug!("loci", "[routing] GET {url}");
 
     let client = http_client();
     let bytes = match client.get(&url).send() {
@@ -74,27 +75,27 @@ pub fn get_route(
             let status = resp.status();
             let bytes = resp.bytes().ok()?;
             if !status.is_success() {
-                eprintln!("[routing] OSRM error {status}: {}", String::from_utf8_lossy(&bytes));
+                glib::g_warning!("loci", "[routing] OSRM error {status}: {}", String::from_utf8_lossy(&bytes));
                 return None;
             }
             bytes
         }
         Err(e) => {
-            eprintln!("[routing] HTTP error: {e}");
+            glib::g_warning!("loci", "[routing] HTTP error: {e}");
             return None;
         }
     };
 
-    eprintln!("[routing] response {} bytes", bytes.len());
+    glib::g_debug!("loci", "[routing] response {} bytes", bytes.len());
 
     // Standard OSRM uses polyline precision 5.
     let mut routes = match OsrmResponseParser::new(5).parse_response(bytes.to_vec()) {
         Ok(routes) => {
-            eprintln!("[routing] parsed {} route(s)", routes.len());
+            glib::g_debug!("loci", "[routing] parsed {} route(s)", routes.len());
             routes
         }
         Err(e) => {
-            eprintln!("[routing] parse error: {e:?}");
+            glib::g_warning!("loci", "[routing] parse error: {e:?}");
             return None;
         }
     };
@@ -314,7 +315,7 @@ pub fn get_route_valhalla(
         "units": "km"
     });
 
-    eprintln!("[routing/valhalla] POST http://localhost:8553/v2/route costing={costing}");
+    glib::g_debug!("loci", "[routing/valhalla] POST http://localhost:8553/v2/route costing={costing}");
 
     let client = http_client();
     let resp = match client
@@ -323,13 +324,13 @@ pub fn get_route_valhalla(
         .send()
     {
         Ok(r) => r,
-        Err(e) => { eprintln!("[routing/valhalla] HTTP error: {e}"); return None; }
+        Err(e) => { glib::g_warning!("loci", "[routing/valhalla] HTTP error: {e}"); return None; }
     };
 
     let status = resp.status();
     let bytes = resp.bytes().ok()?;
     if !status.is_success() {
-        eprintln!("[routing/valhalla] error {status}: {}", String::from_utf8_lossy(&bytes));
+        glib::g_warning!("loci", "[routing/valhalla] error {status}: {}", String::from_utf8_lossy(&bytes));
         return None;
     }
 

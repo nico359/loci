@@ -18,6 +18,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+use gtk::glib;
 use ashpd::desktop::location::{Accuracy, CreateSessionOptions, LocationProxy};
 use futures_util::StreamExt;
 
@@ -48,13 +49,13 @@ async fn open_location_stream() -> ashpd::Result<(LocationProxy, impl futures_ut
 /// Async — run inside a tokio runtime.
 pub async fn stream_location(tx: std::sync::mpsc::Sender<(f64, f64, Option<f64>)>) {
     match open_location_stream().await {
-        Err(e) => eprintln!("[location] portal error: {e}"),
+        Err(e) => glib::g_warning!("loci", "[location] portal error: {e}"),
         Ok((_proxy, mut stream)) => {
             while let Some(location) = stream.next().await {
                 // GeoClue uses -1.0 for "unknown heading" (filtered to None by ashpd) and
                 // sometimes 360.0 as a second sentinel. Reject anything outside [0, 360).
                 let heading = location.heading().filter(|&h| h >= 0.0 && h < 360.0);
-                eprintln!("[location] fix: {:.5}, {:.5}  acc={}m  heading={:?}",
+                glib::g_debug!("loci", "[location] fix: {:.5}, {:.5}  acc={}m  heading={:?}",
                     location.latitude(), location.longitude(), location.accuracy(),
                     heading);
                 if tx.send((location.latitude(), location.longitude(), heading)).is_err() {

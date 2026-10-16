@@ -269,7 +269,7 @@ impl LociWindow {
         let imp = self.imp();
 
         if !shumate::VectorRenderer::is_supported() {
-            eprintln!("ERROR: libshumate was compiled without vector tile support");
+            glib::g_warning!("loci", "ERROR: libshumate was compiled without vector tile support");
             return;
         }
 
@@ -457,7 +457,7 @@ impl LociWindow {
                 .ok()
                 .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()))
                 .unwrap_or_else(|| {
-                    eprintln!("[tiles] TileJSON fetch failed, using fallback");
+                    glib::g_debug!("loci", "[tiles] TileJSON fetch failed, using fallback");
                     "https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf".to_owned()
                 });
             let style = build_style_json(
@@ -526,7 +526,7 @@ impl LociWindow {
                     ));
                 }
             }
-            Err(e) => eprintln!("VectorRenderer::new error: {e}"),
+            Err(e) => glib::g_warning!("loci", "VectorRenderer::new error: {e}"),
         }
     }
 
@@ -790,7 +790,7 @@ impl LociWindow {
         let origin = match *imp.current_location.borrow() {
             Some(loc) => loc,
             None => {
-                eprintln!("No location fix yet — press the location button first");
+                glib::g_debug!("loci", "No location fix yet — press the location button first");
                 return;
             }
         };
@@ -831,7 +831,7 @@ impl LociWindow {
         std::thread::spawn(move || {
             match crate::routing::get_route_with_source(origin, destination, &map_profile, &profile) {
                 Some(route) => { let _ = tx.send(route); }
-                None => eprintln!("Routing request failed"),
+                None => glib::g_warning!("loci", "Routing request failed"),
             }
         });
 
@@ -911,7 +911,7 @@ impl LociWindow {
         *imp.reroute_result.lock().unwrap() = None;
 
         let controller = Arc::new(NavigationController::new(route, config));
-        eprintln!("[nav] NavigationController created, calling get_initial_state...");
+        glib::g_debug!("loci", "[nav] NavigationController created, calling get_initial_state...");
 
         let initial_location = UserLocation {
             coordinates: GeographicCoordinate { lat: origin.0, lng: origin.1 },
@@ -1005,7 +1005,7 @@ impl LociWindow {
                 let imp = window.imp();
                 let course = gps_heading
                     .map(|h| {
-                        eprintln!("[nav] heading: GPS {h:.1}°");
+                        glib::g_debug!("loci", "[nav] heading: GPS {h:.1}°");
                         CourseOverGround::new(h, None)
                     })
                     .or_else(|| {
@@ -1014,10 +1014,10 @@ impl LociWindow {
                             let dist = haversine(prev_lat, prev_lon, lat, lon);
                             if dist >= MIN_BEARING_DIST {
                                 let bearing = compute_bearing(prev_lat, prev_lon, lat, lon);
-                                eprintln!("[nav] heading: computed {bearing:.1}° ({dist:.0}m delta)");
+                                glib::g_debug!("loci", "[nav] heading: computed {bearing:.1}° ({dist:.0}m delta)");
                                 Some(CourseOverGround::new(bearing, None))
                             } else {
-                                eprintln!("[nav] heading: none (delta {dist:.1}m < threshold)");
+                                glib::g_debug!("loci", "[nav] heading: none (delta {dist:.1}m < threshold)");
                                 None
                             }
                         })
@@ -1180,7 +1180,7 @@ impl LociWindow {
                             std::thread::spawn(move || {
                                 match crate::routing::get_route_with_source(from, dest, &map_profile, &profile) {
                                     Some(route) => { *rr.lock().unwrap() = Some(route); }
-                                    None => eprintln!("[nav] reroute request failed"),
+                                    None => glib::g_warning!("loci", "[nav] reroute request failed"),
                                 }
                             });
                         }
@@ -1307,10 +1307,10 @@ impl LociWindow {
     /// Update the nav banner labels/icon from a NavState.
     fn update_nav_banner(imp: &imp::LociWindow, state: &ferrostar::navigation_controller::models::NavState) {
         use ferrostar::navigation_controller::models::TripState;
-        eprintln!("[nav] update_nav_banner called, trip_state variant check...");
+        glib::g_debug!("loci", "[nav] update_nav_banner called, trip_state variant check...");
         match state.trip_state() {
             TripState::Navigating { visual_instruction, remaining_steps, progress, .. } => {
-                eprintln!("[nav] TripState::Navigating — dist_to_maneuver={:.0}m", progress.distance_to_next_maneuver);
+                glib::g_debug!("loci", "[nav] TripState::Navigating — dist_to_maneuver={:.0}m", progress.distance_to_next_maneuver);
                 let text = visual_instruction
                     .as_ref()
                     .map(|vi| vi.primary_content.text.clone())
@@ -1339,8 +1339,8 @@ impl LociWindow {
                 imp.nav_remaining_distance_label.set_text(&format_distance(progress.distance_remaining, units));
                 imp.nav_remaining_time_label.set_text(&format_duration(progress.duration_remaining));
             }
-            TripState::Complete { .. } => eprintln!("[nav] TripState::Complete"),
-            TripState::Idle { .. } => eprintln!("[nav] TripState::Idle — nav controller did not advance"),
+            TripState::Complete { .. } => glib::g_debug!("loci", "[nav] TripState::Complete"),
+            TripState::Idle { .. } => glib::g_debug!("loci", "[nav] TripState::Idle — nav controller did not advance"),
         }
     }
 

@@ -45,6 +45,7 @@ mod imp {
             let obj = self.obj();
             obj.setup_gactions();
             obj.set_accels_for_action("app.quit", &["<control>q"]);
+            obj.set_accels_for_action("app.shortcuts", &["<control>question"]);
         }
     }
 
@@ -109,7 +110,10 @@ impl LociApplication {
         let about_action = gio::ActionEntry::builder("about")
             .activate(move |app: &Self, _, _| app.show_about())
             .build();
-        self.add_action_entries([quit_action, about_action]);
+        let shortcuts_action = gio::ActionEntry::builder("shortcuts")
+            .activate(move |app: &Self, _, _| app.show_shortcuts())
+            .build();
+        self.add_action_entries([quit_action, about_action, shortcuts_action]);
     }
 
     fn show_about(&self) {
@@ -163,5 +167,16 @@ impl LociApplication {
         );
 
         about.present(Some(&window));
+    }
+
+    /// Present the bundled keyboard-shortcuts dialog.
+    fn show_shortcuts(&self) {
+        let Some(window) = self.active_window() else {
+            return;
+        };
+        let builder = gtk::Builder::from_resource("/io/github/nico359/loci/shortcuts-dialog.ui");
+        if let Some(dialog) = builder.object::<adw::ShortcutsDialog>("shortcuts_dialog") {
+            dialog.present(Some(&window));
+        }
     }
 }
