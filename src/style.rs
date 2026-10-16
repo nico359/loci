@@ -79,7 +79,7 @@ pub(crate) fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
             // --- Buildings ---
             {"id": "building", "type": "fill",
              "source": "openmaptiles", "source-layer": "building",
-             "minzoom": 13,
+             "minzoom": 15,
              "paint": {"fill-color": "#dbd5cc",
                        "fill-outline-color": "#c0b8b0"}},
             // --- Roads ---
@@ -202,10 +202,12 @@ pub(crate) fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
              "paint": {"text-color": "#555",
                        "text-halo-color": "#fff",
                        "text-halo-width": 1}},
-            // All named POIs at street level (z16+)
+            // Named POIs at street level (z16+). Capped by rank to keep the
+            // decoded symbol data per tile in check.
             {"id": "poi-detail", "type": "symbol",
              "source": "openmaptiles", "source-layer": "poi",
              "minzoom": 16,
+             "filter": ["<=", "rank", 10],
              "layout": {
                  "text-field": ["get", "name"],
                  "text-size": 10,
