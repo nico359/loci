@@ -179,6 +179,8 @@ mod imp {
         pub nav_zoom_target: std::cell::Cell<Option<f64>>,
         // Timestamp of the previous navigation fix, for a speed fallback.
         pub last_nav_fix_time: std::cell::Cell<Option<std::time::Instant>>,
+        // The 60 fps navigation render timer, installed only while navigating.
+        pub render_timer: RefCell<Option<glib::SourceId>>,
         // Ring buffer of recent positions (up to 4) for vector-averaged heading
         pub recent_positions: RefCell<Vec<(f64, f64)>>,
         // Screen idle inhibit — held during navigation, dropped to release
@@ -979,6 +981,10 @@ impl LociWindow {
         imp.last_nav_fix_time.set(None);
         *imp.last_nav_pos.borrow_mut() = None;
         imp.recent_positions.borrow_mut().clear();
+        // Start the render timer for smooth dot movement and the follow camera.
+        *imp.extrap_fix0.borrow_mut() = None;
+        *imp.extrap_fix1.borrow_mut() = None;
+        self.install_render_timer();
         *imp.heading_from.borrow_mut() = None;
         *imp.heading_to.borrow_mut() = None;
         *imp.heading_anim_start.borrow_mut() = None;
@@ -1340,6 +1346,7 @@ impl LociWindow {
         *imp.last_reroute_at.borrow_mut() = None;
         imp.is_rerouting.set(false);
         *imp.reroute_result.lock().unwrap() = None;
+        self.remove_render_timer();
         // Release screen idle inhibit
         if let Some(cookie) = imp.idle_inhibit.borrow_mut().take() {
             if let Some(app) = self.application() {
@@ -1473,20 +1480,29 @@ impl LociWindow {
                     }
                 }
 
-                // Update extrapolation buffer for the location dot.
-                // Skip during navigation — the nav loop already pushes snapped fixes,
-                // and mixing raw GPS into the same two-slot buffer would cause the
-                // interpolated dot to jump between the snapped and raw positions.
+                // When not navigating the render timer is not running, so place
+                // the dot straight from the fix; during navigation the timer
+                // extrapolates it instead.
                 if imp.nav_controller.borrow().is_none() {
-                    push_extrap_fix(&imp, lat, lon);
+                    if let Some(marker) = imp.location_marker.borrow().as_ref() {
+                        marker.set_location(lat, lon);
+                    }
                 }
                 glib::ControlFlow::Continue
             }
         });
 
-        // 60 fps animation timer — smoothly interpolates the location dot (and viewport
-        // during navigation) between GPS fixes so movement looks fluid instead of jumping.
-        glib::timeout_add_local(std::time::Duration::from_millis(16), {
+    }
+
+    /// Installs the 60 fps navigation render timer. It extrapolates the dot
+    /// between GPS fixes and drives the follow camera; it only runs while
+    /// navigating, so an idle app does not wake 60 times a second.
+    fn install_render_timer(&self) {
+        let imp = self.imp();
+        if imp.render_timer.borrow().is_some() {
+            return;
+        }
+        let id = glib::timeout_add_local(std::time::Duration::from_millis(16), {
             let window_weak = self.downgrade();
             move || {
                 let Some(window) = window_weak.upgrade() else {
@@ -1583,7 +1599,16 @@ impl LociWindow {
                 glib::ControlFlow::Continue
             }
         });
+        *imp.render_timer.borrow_mut() = Some(id);
     }
+
+    /// Removes the navigation render timer, if one is installed.
+    fn remove_render_timer(&self) {
+        if let Some(id) = self.imp().render_timer.borrow_mut().take() {
+            id.remove();
+        }
+    }
+
 }
 
 /// Target zoom for navigation: slower travel zooms in, faster travel zooms out.
