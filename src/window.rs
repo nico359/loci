@@ -43,7 +43,7 @@ impl ferrostar::deviation_detection::RouteDeviationDetector for CurrentStepDevia
         _route: ferrostar::models::Route,
         trip_state: ferrostar::navigation_controller::models::TripState,
     ) -> ferrostar::deviation_detection::RouteDeviation {
-        use ferrostar::deviation_detection::RouteDeviation;
+        use ferrostar::deviation_detection::{DeviationKind, RouteDeviation};
         use ferrostar::navigation_controller::models::TripState;
         use geo::Point;
 
@@ -55,7 +55,9 @@ impl ferrostar::deviation_detection::RouteDeviationDetector for CurrentStepDevia
                     .collect();
                 if let Some(dist) = ferrostar::algorithms::deviation_from_line(&point, &line) {
                     if dist > self.max_acceptable_deviation {
-                        return RouteDeviation::OffRoute { deviation_from_route_line: dist };
+                        return RouteDeviation::Deviation {
+                            kind: DeviationKind::CompletelyOffRoute { deviation_from_route_line: dist },
+                        };
                     }
                 }
             }
@@ -1047,7 +1049,7 @@ impl LociWindow {
                             let heading = snapped_user_location.course_over_ground.map(|c| c.degrees as f64);
                             (pos, heading)
                         }
-                        RouteDeviation::OffRoute { .. } => ((lat, lon), None),
+                        RouteDeviation::Deviation { .. } => ((lat, lon), None),
                     }
                 } else {
                     ((lat, lon), None)
@@ -1100,7 +1102,7 @@ impl LociWindow {
                 Self::update_nav_banner(imp, &new_state);
 
                 // Trigger reroute when off-route (10 s cooldown, one request at a time)
-                if let TripState::Navigating { deviation: RouteDeviation::OffRoute { .. }, .. } = new_state.trip_state() {
+                if let TripState::Navigating { deviation: RouteDeviation::Deviation { .. }, .. } = new_state.trip_state() {
                     let now = std::time::Instant::now();
                     let can_reroute = !imp.is_rerouting.get() && {
                         let last = imp.last_reroute_at.borrow();
