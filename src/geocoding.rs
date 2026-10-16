@@ -18,7 +18,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#[derive(Clone, Debug, Default)]
+use crate::util::haversine;
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct PhotonFeature {
     pub name: String,
     pub subtitle: String,
@@ -33,54 +35,86 @@ impl PhotonFeature {
         let lat = coords.get(1)?.as_f64()?;
         let props = &feature["properties"];
 
+        let street_line = match (props["street"].as_str(), props["housenumber"].as_str()) {
+            (Some(street), Some(number)) => Some(format!("{street} {number}")),
+            (Some(street), None) => Some(street.to_owned()),
+            _ => None,
+        };
+
         let name = props["name"]
             .as_str()
-            .or_else(|| props["street"].as_str())
-            .unwrap_or("Unknown place")
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| street_line.clone())
+            .unwrap_or_else(|| "Unknown place".to_owned());
 
-        let subtitle = [
-            props["city"].as_str(),
-            props["state"].as_str(),
-            props["country"].as_str(),
-        ]
-        .iter()
-        .filter_map(|x| *x)
-        .collect::<Vec<_>>()
-        .join(", ");
+        // Lead with the address (unless it is already the name), then the
+        // administrative context, so addresses are distinguishable from POIs.
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(line) = street_line.as_deref() {
+            if line != name {
+                parts.push(line);
+            }
+        }
+        for key in ["city", "state", "country"] {
+            if let Some(value) = props[key].as_str() {
+                parts.push(value);
+            }
+        }
 
-        Some(PhotonFeature { name, subtitle, lat, lon })
+        Some(PhotonFeature {
+            name,
+            subtitle: parts.join(", "),
+            lat,
+            lon,
+        })
     }
 }
 
 /// Dispatch to the right geocoder depending on the current map profile.
 /// Blocking — call from a background thread.
-pub fn search_with_profile(query: &str, profile: &str) -> Vec<PhotonFeature> {
+///
+/// `near` is an optional location bias (the user's current position), used to
+/// prefer results around them over globally better-ranked matches.
+pub fn search_with_profile(
+    query: &str,
+    profile: &str,
+    near: Option<(f64, f64)>,
+) -> Vec<PhotonFeature> {
     if profile == "offline" {
+        // TODO: pass the location bias once Scout's search parameters are
+        // confirmed; offline search is being revisited separately.
+        let _ = near;
         search_scout(query)
     } else {
-        search(query)
+        search(query, near)
     }
 }
 
 /// Search Photon (https://photon.komoot.io) and return up to 5 results.
 /// Blocking — call from a background thread.
-pub fn search(query: &str) -> Vec<PhotonFeature> {
+pub fn search(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
     let client = crate::routing::http_client();
-    let response = client
-        .get("https://photon.komoot.io/api/")
-        .query(&[("q", query), ("limit", "5")])
-        .send();
 
-    response
-        .and_then(|r| r.text())
+    let mut params: Vec<(&str, String)> =
+        vec![("q", query.to_owned()), ("limit", "6".to_owned())];
+    if let Some((lat, lon)) = near {
+        params.push(("lat", lat.to_string()));
+        params.push(("lon", lon.to_string()));
+    }
+
+    let results = client
+        .get("https://photon.komoot.io/api/")
+        .query(&params)
+        .send()
+        .and_then(|r| r.json::<serde_json::Value>())
         .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|v| v["features"].as_array().cloned())
         .unwrap_or_default()
         .iter()
         .filter_map(PhotonFeature::from_value)
-        .collect()
+        .collect();
+
+    dedup(results).into_iter().take(5).collect()
 }
 
 /// Search OSM Scout Server's local geocoder and return up to 5 results.
@@ -117,4 +151,20 @@ fn search_scout(query: &str) -> Vec<PhotonFeature> {
             Some(PhotonFeature { name, subtitle, lat, lon })
         })
         .collect()
+}
+
+/// Drop near-duplicate results that describe the same place. Photon frequently
+/// returns the same street a few tens of metres apart, and a POI sitting on it.
+fn dedup(list: Vec<PhotonFeature>) -> Vec<PhotonFeature> {
+    let mut out: Vec<PhotonFeature> = Vec::with_capacity(list.len());
+    for feature in list {
+        let duplicate = out.iter().any(|kept| {
+            kept.name == feature.name
+                && haversine(kept.lat, kept.lon, feature.lat, feature.lon) < 100.0
+        });
+        if !duplicate {
+            out.push(feature);
+        }
+    }
+    out
 }

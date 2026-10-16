@@ -21,6 +21,7 @@
 mod application;
 mod config;
 mod geocoding;
+mod history;
 mod location;
 mod routing;
 mod settings;

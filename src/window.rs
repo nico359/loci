@@ -620,9 +620,15 @@ impl LociWindow {
             None, // no next field → dismiss keyboard after selection
             {
                 let window_weak = self.downgrade();
-                move || window_weak.upgrade()
-                    .map(|w| w.imp().map_profile.borrow().clone())
-                    .unwrap_or_else(|| "online".to_string())
+                move || {
+                    window_weak
+                        .upgrade()
+                        .map(|w| {
+                            let imp = w.imp();
+                            (imp.map_profile.borrow().clone(), *imp.current_location.borrow())
+                        })
+                        .unwrap_or_else(|| ("online".to_string(), None))
+                }
             },
             {
                 let window_weak = self.downgrade();
@@ -695,9 +701,15 @@ impl LociWindow {
             Some(imp.planner_to_entry.get().upcast::<gtk::Widget>()), // focus To next
             {
                 let window_weak = self.downgrade();
-                move || window_weak.upgrade()
-                    .map(|w| w.imp().map_profile.borrow().clone())
-                    .unwrap_or_else(|| "online".to_string())
+                move || {
+                    window_weak
+                        .upgrade()
+                        .map(|w| {
+                            let imp = w.imp();
+                            (imp.map_profile.borrow().clone(), *imp.current_location.borrow())
+                        })
+                        .unwrap_or_else(|| ("online".to_string(), None))
+                }
             },
             {
                 let window_weak = self.downgrade();
@@ -721,9 +733,15 @@ impl LociWindow {
             None, // no next field → dismiss keyboard
             {
                 let window_weak = self.downgrade();
-                move || window_weak.upgrade()
-                    .map(|w| w.imp().map_profile.borrow().clone())
-                    .unwrap_or_else(|| "online".to_string())
+                move || {
+                    window_weak
+                        .upgrade()
+                        .map(|w| {
+                            let imp = w.imp();
+                            (imp.map_profile.borrow().clone(), *imp.current_location.borrow())
+                        })
+                        .unwrap_or_else(|| ("online".to_string(), None))
+                }
             },
             {
                 let window_weak = self.downgrade();
@@ -1557,7 +1575,7 @@ where
         + Clone
         + 'static,
     F: Fn(PhotonFeature) + Clone + 'static,
-    P: Fn() -> String + Clone + 'static,
+    P: Fn() -> (String, Option<(f64, f64)>) + Clone + 'static,
 {
     let list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -1582,6 +1600,54 @@ where
 
     let results_store: std::rc::Rc<std::cell::RefCell<Vec<PhotonFeature>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+    // Fills the popover with a list of places (search results or history).
+    let render: std::rc::Rc<dyn Fn(Vec<PhotonFeature>)> = {
+        let list_box = list_box.clone();
+        let popover = popover.clone();
+        let results_store = results_store.clone();
+        std::rc::Rc::new(move |items: Vec<PhotonFeature>| {
+            while let Some(child) = list_box.first_child() {
+                list_box.remove(&child);
+            }
+            *results_store.borrow_mut() = items.clone();
+            if items.is_empty() {
+                popover.popdown();
+                return;
+            }
+            for feat in &items {
+                let row = gtk::ListBoxRow::new();
+                let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                hbox.set_margin_start(12);
+                hbox.set_margin_end(12);
+                hbox.set_margin_top(8);
+                hbox.set_margin_bottom(8);
+
+                let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                vbox.set_hexpand(true);
+
+                let name_lbl = gtk::Label::builder()
+                    .label(&feat.name)
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build();
+                let sub_lbl = gtk::Label::builder()
+                    .label(&feat.subtitle)
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build();
+                sub_lbl.add_css_class("caption");
+                sub_lbl.add_css_class("dim-label");
+
+                vbox.append(&name_lbl);
+                vbox.append(&sub_lbl);
+                hbox.append(&vbox);
+                row.set_child(Some(&hbox));
+                list_box.append(&row);
+            }
+            popover.popup();
+        })
+    };
 
     // True while this entry genuinely has keyboard focus.
     // Managed exclusively by EventControllerFocus so it's never affected by
@@ -1610,7 +1676,17 @@ where
         let focus_ctrl = gtk::EventControllerFocus::new();
         focus_ctrl.connect_enter({
             let ef = entry_focused.clone();
-            move |_| { ef.set(true); }
+            let entry = entry.clone();
+            let render = render.clone();
+            let sp = suppress_popup.clone();
+            move |_| {
+                ef.set(true);
+                // With an empty field, offer the recently used places.
+                if entry.text().is_empty() {
+                    sp.set(false);
+                    render(crate::history::load());
+                }
+            }
         });
         focus_ctrl.connect_leave({
             let ef = entry_focused.clone();
@@ -1639,9 +1715,9 @@ where
             let query = entry.text().to_string();
             if query.is_empty() { return; }
             let tx = tx.clone();
-            let profile = get_profile();
+            let (profile, near) = get_profile();
             std::thread::spawn(move || {
-                let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile));
+                let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile, near));
             });
         }
     });
@@ -1654,6 +1730,7 @@ where
         let suppress_popup = suppress_popup.clone();
         let search_gen = search_gen.clone();
         let entry = entry.clone();
+        let render = render.clone();
         move |_| {
             // Ignore programmatic text changes (e.g. set_text after selection)
             if suppress.get() {
@@ -1663,6 +1740,11 @@ where
             // User is typing again → allow popup again
             suppress_popup.set(false);
             let query = entry.text().to_string();
+            if query.is_empty() {
+                // Empty field → offer recent places again.
+                render(crate::history::load());
+                return;
+            }
             if query.len() < 3 {
                 popover.popdown();
                 return;
@@ -1675,9 +1757,9 @@ where
             glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
                 if sg.get() != gen { return; }
                 let tx = tx.clone();
-                let profile = get_profile();
+                let (profile, near) = get_profile();
                 std::thread::spawn(move || {
-                    let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile));
+                    let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile, near));
                 });
             });
         }
@@ -1685,11 +1767,9 @@ where
 
     // Poll loop: fill popover when results arrive
     glib::timeout_add_local(std::time::Duration::from_millis(100), {
-        let list_box = list_box.clone();
-        let popover = popover.clone();
+        let render = render.clone();
         let suppress_popup = suppress_popup.clone();
         let entry_focused = entry_focused.clone();
-        let results_store = results_store.clone();
         move || {
             if let Ok(results) = rx.lock().unwrap().try_recv() {
                 // Only show if the entry currently has focus and no result
@@ -1697,45 +1777,7 @@ where
                 if suppress_popup.get() || !entry_focused.get() {
                     return glib::ControlFlow::Continue;
                 }
-                while let Some(child) = list_box.first_child() {
-                    list_box.remove(&child);
-                }
-                *results_store.borrow_mut() = results.clone();
-                if results.is_empty() {
-                    popover.popdown();
-                } else {
-                    for feat in &results {
-                        let row = gtk::ListBoxRow::new();
-                        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                        hbox.set_margin_start(12);
-                        hbox.set_margin_end(12);
-                        hbox.set_margin_top(8);
-                        hbox.set_margin_bottom(8);
-
-                        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
-                        vbox.set_hexpand(true);
-
-                        let name_lbl = gtk::Label::builder()
-                            .label(&feat.name)
-                            .xalign(0.0)
-                            .ellipsize(gtk::pango::EllipsizeMode::End)
-                            .build();
-                        let sub_lbl = gtk::Label::builder()
-                            .label(&feat.subtitle)
-                            .xalign(0.0)
-                            .ellipsize(gtk::pango::EllipsizeMode::End)
-                            .build();
-                        sub_lbl.add_css_class("caption");
-                        sub_lbl.add_css_class("dim-label");
-
-                        vbox.append(&name_lbl);
-                        vbox.append(&sub_lbl);
-                        hbox.append(&vbox);
-                        row.set_child(Some(&hbox));
-                        list_box.append(&row);
-                    }
-                    popover.popup();
-                }
+                render(results);
             }
             glib::ControlFlow::Continue
         }
@@ -1754,6 +1796,7 @@ where
                 drop(results);
                 suppress_popup.set(true); // block any in-flight search from re-opening
                 popover.popdown();
+                crate::history::record(&feat);
                 on_select(feat);
                 // Move focus: to next field (keeps keyboard open) or dismiss keyboard
                 if let Some(w) = &next_focus {
