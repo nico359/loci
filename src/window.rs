@@ -181,6 +181,9 @@ mod imp {
         pub last_nav_fix_time: std::cell::Cell<Option<std::time::Instant>>,
         // The 60 fps navigation render timer, installed only while navigating.
         pub render_timer: RefCell<Option<glib::SourceId>>,
+        // Feeds the single app-wide location stream into the navigation loop, so
+        // navigating never opens a second GeoClue session.
+        pub nav_fix_tx: RefCell<Option<std::sync::mpsc::Sender<(f64, f64, Option<f64>, Option<f64>)>>>,
         // Ring buffer of recent positions (up to 4) for vector-averaged heading
         pub recent_positions: RefCell<Vec<(f64, f64)>>,
         // Screen idle inhibit — held during navigation, dropped to release
@@ -1002,16 +1005,13 @@ impl LociWindow {
             *imp.idle_inhibit.borrow_mut() = Some(cookie);
         }
 
-        // Spawn GPS streaming thread — feeds location into the navigation controller
+        // Feed the navigation loop from the single app-wide location stream
+        // started in setup_location, rather than opening a second GeoClue
+        // session just for navigation.
         let nav_state = imp.nav_state.clone();
         let (loc_tx, loc_rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>, Option<f64>)>();
         let loc_rx = Arc::new(Mutex::new(loc_rx));
-
-        // GPS thread
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-            rt.block_on(crate::location::stream_location(loc_tx));
-        });
+        *imp.nav_fix_tx.borrow_mut() = Some(loc_tx);
 
         // Navigation update loop — runs on main thread
         glib::timeout_add_local(std::time::Duration::from_millis(500), {
@@ -1347,6 +1347,7 @@ impl LociWindow {
         imp.is_rerouting.set(false);
         *imp.reroute_result.lock().unwrap() = None;
         self.remove_render_timer();
+        *imp.nav_fix_tx.borrow_mut() = None;
         // Release screen idle inhibit
         if let Some(cookie) = imp.idle_inhibit.borrow_mut().take() {
             if let Some(app) = self.application() {
@@ -1460,7 +1461,7 @@ impl LociWindow {
                 while let Ok(fix) = rx.lock().unwrap().try_recv() {
                     latest = Some(fix);
                 }
-                let Some((lat, lon, _heading, _speed)) = latest else {
+                let Some((lat, lon, heading, speed)) = latest else {
                     return glib::ControlFlow::Continue;
                 };
                 let Some(window) = window_weak.upgrade() else {
@@ -1470,6 +1471,12 @@ impl LociWindow {
 
                 // Store fix so routing and location button can use it
                 *imp.current_location.borrow_mut() = Some((lat, lon));
+
+                // Fan the fix out to the navigation loop, if it is running, from
+                // this single stream rather than opening another GeoClue session.
+                if let Some(tx) = imp.nav_fix_tx.borrow().as_ref() {
+                    let _ = tx.send((lat, lon, heading, speed));
+                }
 
                 // Pan to first fix automatically; subsequent pans only on button press
                 if !first_fix_received.get() {
