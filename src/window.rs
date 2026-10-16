@@ -26,6 +26,8 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use crate::geocoding::PhotonFeature;
+use crate::style::build_style_json;
+use crate::util::{capitalize, compute_bearing, format_distance, format_duration, haversine};
 
 /// A deviation detector that only checks the *current* route step (index 0 of remaining_steps).
 ///
@@ -1439,7 +1441,7 @@ impl LociWindow {
     }
 }
 
-/// Walk a serde_json Value tree and replace every `["linear", <arg>]` array
+/// Maps a ferrostar maneuver type/modifier to the bundled symbolic icon name.
 fn maneuver_icon(
     maneuver_type: Option<ferrostar::models::ManeuverType>,
     maneuver_modifier: Option<ferrostar::models::ManeuverModifier>,
@@ -1460,7 +1462,6 @@ fn maneuver_icon(
     }
 }
 
-/// Capitalises the first letter of `s`, replacing underscores with spaces.
 fn map_profile_path() -> std::path::PathBuf {
     let mut path = glib::user_data_dir();
     path.push("loci");
@@ -1479,258 +1480,6 @@ fn save_map_profile(profile: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(path, profile);
-}
-
-/// Builds the complete Mapbox GL style JSON using the given tile and glyph URLs.
-fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
-    serde_json::json!({
-        "version": 8,
-        "name": "Loci",
-        "sources": {
-            "openmaptiles": {
-                "type": "vector",
-                "tiles": [tile_url],
-                "minzoom": 0,
-                "maxzoom": 14
-            }
-        },
-        "glyphs": glyph_url,
-        "layers": [
-            // --- Background & land ---
-            {"id": "background", "type": "background",
-             "paint": {"background-color": "#f0ebe3"}},
-            {"id": "landcover-grass", "type": "fill",
-             "source": "openmaptiles", "source-layer": "landcover",
-             "filter": ["in", "class", "grass", "meadow", "park"],
-             "paint": {"fill-color": "#d8eeca"}},
-            {"id": "landcover-forest", "type": "fill",
-             "source": "openmaptiles", "source-layer": "landcover",
-             "filter": ["==", "class", "forest"],
-             "paint": {"fill-color": "#c0ddb0"}},
-            // --- Landuse ---
-            {"id": "landuse-residential", "type": "fill",
-             "source": "openmaptiles", "source-layer": "landuse",
-             "filter": ["==", "class", "residential"],
-             "paint": {"fill-color": "#e8e0d8"}},
-            {"id": "landuse-commercial", "type": "fill",
-             "source": "openmaptiles", "source-layer": "landuse",
-             "filter": ["==", "class", "commercial"],
-             "paint": {"fill-color": "#f0e8d8"}},
-            {"id": "landuse-industrial", "type": "fill",
-             "source": "openmaptiles", "source-layer": "landuse",
-             "filter": ["==", "class", "industrial"],
-             "paint": {"fill-color": "#ded8cc"}},
-            {"id": "landuse-park", "type": "fill",
-             "source": "openmaptiles", "source-layer": "landuse",
-             "filter": ["in", "class", "park", "pitch"],
-             "paint": {"fill-color": "#d0e8c0"}},
-            // --- Water ---
-            {"id": "water-fill", "type": "fill",
-             "source": "openmaptiles", "source-layer": "water",
-             "paint": {"fill-color": "#a8d4f0"}},
-            {"id": "waterway", "type": "line",
-             "source": "openmaptiles", "source-layer": "waterway",
-             "paint": {"line-color": "#a8d4f0",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      10, 1, 14, 3]}},
-            // --- Buildings ---
-            {"id": "building", "type": "fill",
-             "source": "openmaptiles", "source-layer": "building",
-             "minzoom": 13,
-             "paint": {"fill-color": "#dbd5cc",
-                       "fill-outline-color": "#c0b8b0"}},
-            // --- Roads ---
-            {"id": "road-path", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "path", "track"],
-             "layout": {"line-cap": "round", "line-join": "round"},
-             "paint": {"line-color": "#d0c8c0", "line-width": 1,
-                       "line-dasharray": [2, 2]}},
-            {"id": "road-minor-casing", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "minor", "service"],
-             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -1},
-             "paint": {"line-color": "#d8d0c8",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      13, 1.5, 16, 5]}},
-            {"id": "road-minor", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "minor", "service"],
-             "layout": {"line-cap": "round", "line-join": "round"},
-             "paint": {"line-color": "#f0ece4",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      13, 0.5, 16, 3]}},
-            {"id": "road-secondary-casing", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "secondary", "tertiary"],
-             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -2},
-             "paint": {"line-color": "#d8d0b0",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      10, 1.5, 14, 4, 16, 8]}},
-            {"id": "road-secondary", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "secondary", "tertiary"],
-             "layout": {"line-cap": "round", "line-join": "round"},
-             "paint": {"line-color": "#f8f4e8",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      10, 0.5, 14, 2.5, 16, 6]}},
-            {"id": "road-primary-casing", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "primary", "trunk"],
-             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -3},
-             "paint": {"line-color": "#d4b86a",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      8, 1.5, 12, 3, 15, 5.5, 17, 10]}},
-            {"id": "road-primary", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["in", "class", "primary", "trunk"],
-             "layout": {"line-cap": "round", "line-join": "round"},
-             "paint": {"line-color": "#fce8a0",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      8, 0.5, 12, 1.5, 15, 3.5, 17, 8]}},
-            {"id": "road-motorway-casing", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["==", "class", "motorway"],
-             "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": -4},
-             "paint": {"line-color": "#c87d30",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      6, 1.5, 10, 3, 15, 6, 17, 11]}},
-            {"id": "road-motorway", "type": "line",
-             "source": "openmaptiles", "source-layer": "transportation",
-             "filter": ["==", "class", "motorway"],
-             "layout": {"line-cap": "round", "line-join": "round"},
-             "paint": {"line-color": "#e8943a",
-                       "line-width": ["interpolate", ["linear"], ["zoom"],
-                                      6, 0.5, 10, 1.5, 15, 4, 17, 9]}},
-            // --- Labels ---
-            {"id": "road-name", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "transportation_name",
-             "minzoom": 14,
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": 11,
-                 "text-font": ["Noto Sans Regular"],
-                 "symbol-placement": "line",
-                 "text-max-angle": 30
-             },
-             "paint": {"text-color": "#555",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1}},
-            {"id": "housenumber", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "housenumber",
-             "minzoom": 17,
-             "layout": {
-                 "text-field": ["get", "housenumber"],
-                 "text-size": 10,
-                 "text-font": ["Noto Sans Regular"]
-             },
-             "paint": {"text-color": "#888",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1}},
-            // Important POIs (rank 1-2: stations, hospitals, airports) from zoom 13
-            {"id": "poi-important", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "poi",
-             "minzoom": 13,
-             "filter": ["<=", "rank", 2],
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": 11,
-                 "text-font": ["Noto Sans Bold"],
-                 "text-anchor": "top",
-                 "text-offset": [0, 0.4],
-                 "text-max-width": 8
-             },
-             "paint": {"text-color": "#333",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1.5}},
-            // General POIs (supermarkets, restaurants, shops, etc.) from zoom 15
-            {"id": "poi-label", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "poi",
-             "minzoom": 15,
-             "filter": ["<=", "rank", 6],
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": 11,
-                 "text-font": ["Noto Sans Regular"],
-                 "text-anchor": "top",
-                 "text-offset": [0, 0.4],
-                 "text-max-width": 7
-             },
-             "paint": {"text-color": "#555",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1}},
-            // All named POIs at street level (z16+)
-            {"id": "poi-detail", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "poi",
-             "minzoom": 16,
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": 10,
-                 "text-font": ["Noto Sans Regular"],
-                 "text-anchor": "top",
-                 "text-offset": [0, 0.4],
-                 "text-max-width": 6
-             },
-             "paint": {"text-color": "#666",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1}},
-            {"id": "place-suburb", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "place",
-             "filter": ["in", "class", "suburb", "quarter", "neighbourhood"],
-             "minzoom": 13,
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": 11,
-                 "text-font": ["Noto Sans Italic"],
-                 "text-transform": "uppercase"
-             },
-             "paint": {"text-color": "#888",
-                       "text-halo-color": "#f0ebe3",
-                       "text-halo-width": 1}},
-            {"id": "place-city", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "place",
-             "filter": ["in", "class", "city", "town", "village"],
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": ["interpolate", ["linear"], ["zoom"],
-                               8, 11, 12, 14],
-                 "text-font": ["Noto Sans Bold"]
-             },
-             "paint": {"text-color": "#333",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 2}}
-        ]
-    }).to_string()
-}
-
-fn capitalize(s: &str) -> String {
-    let spaced = s.replace('_', " ");
-    let mut chars = spaced.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
-    }
-}
-
-fn format_distance(meters: f64) -> String {
-    if meters >= 1000.0 {
-        format!("{:.1} km", meters / 1000.0)
-    } else {
-        format!("{} m", meters.round() as u32)
-    }
-}
-
-fn format_duration(seconds: f64) -> String {
-    let total = seconds.round() as u64;
-    let hours = total / 3600;
-    let mins = (total % 3600) / 60;
-    if hours > 0 {
-        format!("{} h {} min", hours, mins)
-    } else if mins == 0 {
-        "< 1 min".to_string()
-    } else {
-        format!("{} min", mins)
-    }
 }
 
 /// Attach a Photon geocoding autocomplete popover to any `GtkEntry`-like widget.
@@ -1987,31 +1736,6 @@ where
     let _ = window;
 }
 
-/// Haversine distance in metres between two WGS-84 coordinates.
-fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const R: f64 = 6_371_000.0;
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * R * a.sqrt().asin()
-}
-
-/// Great-circle bearing from point 1 → point 2, in clockwise degrees from north [0, 360).
-fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let lat1r = lat1.to_radians();
-    let lat2r = lat2.to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let y = dlon.sin() * lat2r.cos();
-    let x = lat1r.cos() * lat2r.sin() - lat1r.sin() * lat2r.cos() * dlon.cos();
-    let bearing = y.atan2(x).to_degrees();
-    (bearing + 360.0) % 360.0
-}
-
-/// Update the animation target for the location dot.
-/// Takes the current interpolated position as `anim_from` so transitions are seamless
-/// even if the previous animation hadn't completed yet.
-
 /// Push a new GPS fix into the two-slot linear-extrapolation buffer.
 /// fix0 ← old fix1, fix1 ← (lat, lon, now).
 fn push_extrap_fix(imp: &imp::LociWindow, lat: f64, lon: f64) {
@@ -2020,7 +1744,6 @@ fn push_extrap_fix(imp: &imp::LociWindow, lat: f64, lon: f64) {
     *imp.extrap_fix0.borrow_mut() = prev;
     *imp.extrap_fix1.borrow_mut() = Some((lat, lon, now));
 }
-
 
 /// Set a new heading animation target (degrees clockwise from north).
 /// Duration = |delta_deg| / 60  → 60°/s rotation speed (90° takes 1.5 s).
