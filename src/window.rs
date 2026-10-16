@@ -170,6 +170,15 @@ mod imp {
         pub nav_state: std::sync::Arc<std::sync::Mutex<Option<ferrostar::navigation_controller::models::NavState>>>,
         // Last known position used to compute bearing when GPS heading is unavailable
         pub last_nav_pos: RefCell<Option<(f64, f64)>>,
+        // Navigation camera state: whether the map follows the user, plus the
+        // last viewport values we set (used to detect a manual pan or zoom).
+        pub following: std::cell::Cell<bool>,
+        pub last_set_location: std::cell::Cell<Option<(f64, f64)>>,
+        pub last_set_zoom: std::cell::Cell<Option<f64>>,
+        // Zoom derived from the current speed, eased towards while following.
+        pub nav_zoom_target: std::cell::Cell<Option<f64>>,
+        // Timestamp of the previous navigation fix, for a speed fallback.
+        pub last_nav_fix_time: std::cell::Cell<Option<std::time::Instant>>,
         // Ring buffer of recent positions (up to 4) for vector-averaged heading
         pub recent_positions: RefCell<Vec<(f64, f64)>>,
         // Screen idle inhibit — held during navigation, dropped to release
@@ -962,6 +971,12 @@ impl LociWindow {
 
         // Apply chase-camera 3D tilt
         imp.map.add_css_class("navigation-tilt");
+        // Follow the user until they pan away; the location button re-centres.
+        imp.following.set(true);
+        imp.last_set_location.set(None);
+        imp.last_set_zoom.set(None);
+        imp.nav_zoom_target.set(None);
+        imp.last_nav_fix_time.set(None);
         *imp.last_nav_pos.borrow_mut() = None;
         imp.recent_positions.borrow_mut().clear();
         *imp.heading_from.borrow_mut() = None;
@@ -980,7 +995,7 @@ impl LociWindow {
 
         // Spawn GPS streaming thread — feeds location into the navigation controller
         let nav_state = imp.nav_state.clone();
-        let (loc_tx, loc_rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>)>();
+        let (loc_tx, loc_rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>, Option<f64>)>();
         let loc_rx = Arc::new(Mutex::new(loc_rx));
 
         // GPS thread
@@ -997,12 +1012,12 @@ impl LociWindow {
             let reroute_result = imp.reroute_result.clone();
             move || {
                 // Drain all pending location fixes (use the latest one)
-                let mut latest: Option<(f64, f64, Option<f64>)> = None;
+                let mut latest: Option<(f64, f64, Option<f64>, Option<f64>)> = None;
                 while let Ok(fix) = loc_rx.lock().unwrap().try_recv() {
                     latest = Some(fix);
                 }
 
-                let Some((lat, lon, gps_heading)) = latest else {
+                let Some((lat, lon, gps_heading, gps_speed)) = latest else {
                     return glib::ControlFlow::Continue;
                 };
 
@@ -1021,6 +1036,20 @@ impl LociWindow {
                 // Ferrostar snaps position without spinning the map.
                 const MIN_BEARING_DIST: f64 = 10.0; // metres
                 let imp = window.imp();
+
+                // Speed for the navigation zoom: prefer the GPS-reported value,
+                // otherwise derive it from the previous fix and its timestamp.
+                let fix_time = std::time::Instant::now();
+                let computed_speed = match (*imp.last_nav_pos.borrow(), imp.last_nav_fix_time.get()) {
+                    (Some((plat, plon)), Some(prev)) => {
+                        let dt = fix_time.duration_since(prev).as_secs_f64();
+                        (dt > 0.2).then(|| haversine(plat, plon, lat, lon) / dt)
+                    }
+                    _ => None,
+                };
+                imp.last_nav_fix_time.set(Some(fix_time));
+                imp.nav_zoom_target.set(gps_speed.or(computed_speed).map(nav_zoom_for_speed));
+
                 let course = gps_heading
                     .map(|h| {
                         glib::g_debug!("loci", "[nav] heading: GPS {h:.1}°");
@@ -1298,6 +1327,11 @@ impl LociWindow {
         *imp.pending_route.borrow_mut() = None;
         *imp.pending_origin.borrow_mut() = None;
         *imp.last_nav_pos.borrow_mut() = None;
+        imp.following.set(true);
+        imp.last_set_location.set(None);
+        imp.last_set_zoom.set(None);
+        imp.nav_zoom_target.set(None);
+        imp.last_nav_fix_time.set(None);
         imp.recent_positions.borrow_mut().clear();
         *imp.heading_from.borrow_mut() = None;
         *imp.heading_to.borrow_mut() = None;
@@ -1365,7 +1399,7 @@ impl LociWindow {
     fn setup_location(&self) {
         let imp = self.imp();
 
-        let (tx, rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>)>();
+        let (tx, rx) = std::sync::mpsc::channel::<(f64, f64, Option<f64>, Option<f64>)>();
         let rx = Arc::new(Mutex::new(rx));
 
         // Start streaming location continuously in the background.
@@ -1391,8 +1425,18 @@ impl LociWindow {
                 let loc = imp.current_location.borrow().clone();
                 if let Some((lat, lon)) = loc {
                     if let Some(viewport) = imp.map.viewport() {
-                        viewport.set_zoom_level(15.0);
+                        if imp.nav_controller.borrow().is_some() {
+                            // Re-lock the navigation camera and reset the zoom.
+                            imp.following.set(true);
+                            let zoom = imp.nav_zoom_target.get().unwrap_or(16.0);
+                            viewport.set_zoom_level(zoom);
+                            imp.last_set_zoom.set(Some(zoom));
+                        } else {
+                            viewport.set_zoom_level(15.0);
+                            imp.last_set_zoom.set(None);
+                        }
                         viewport.set_location(lat, lon);
+                        imp.last_set_location.set(Some((lat, lon)));
                     }
                 }
             }
@@ -1409,7 +1453,7 @@ impl LociWindow {
                 while let Ok(fix) = rx.lock().unwrap().try_recv() {
                     latest = Some(fix);
                 }
-                let Some((lat, lon, _heading)) = latest else {
+                let Some((lat, lon, _heading, _speed)) = latest else {
                     return glib::ControlFlow::Continue;
                 };
                 let Some(window) = window_weak.upgrade() else {
@@ -1489,25 +1533,50 @@ impl LociWindow {
                     marker.set_location(lat, lon);
                 }
 
-                // During navigation also pan the viewport and apply animated heading
+                // During navigation, keep the camera on the user unless they have
+                // panned or zoomed away; the location button re-centres.
                 if imp.nav_controller.borrow().is_some() {
                     if let Some(viewport) = imp.map.viewport() {
-                        viewport.set_location(lat, lon);
+                        if imp.following.get() {
+                            let moved = imp.last_set_location.get().is_some_and(|(llat, llon)| {
+                                haversine(viewport.latitude(), viewport.longitude(), llat, llon) > 1.0
+                            }) || imp.last_set_zoom.get().is_some_and(|lz| {
+                                (viewport.zoom_level() - lz).abs() > 0.01
+                            });
+                            if moved {
+                                imp.following.set(false);
+                            }
+                        }
 
-                        let h_start = *imp.heading_anim_start.borrow();
-                        let h_from  = *imp.heading_from.borrow();
-                        let h_to    = *imp.heading_to.borrow();
-                        if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
-                            let h_dur = imp.heading_anim_dur.get().max(0.05);
-                            let t_linear = (hs.elapsed().as_secs_f64() / h_dur).min(1.0);
-                            // Smoothstep ease-in-out: t²(3−2t) — feels natural for map rotation
-                            let ht_val = t_linear * t_linear * (3.0 - 2.0 * t_linear);
-                            // Interpolate shortest angular path
-                            let mut delta = ht - hf;
-                            if delta > 180.0 { delta -= 360.0; }
-                            if delta < -180.0 { delta += 360.0; }
-                            let heading = ((hf + delta * ht_val) + 360.0) % 360.0;
-                            viewport.set_rotation(-heading.to_radians());
+                        if imp.following.get() {
+                            viewport.set_location(lat, lon);
+                            imp.last_set_location.set(Some((lat, lon)));
+
+                            // Ease the zoom towards the speed-derived target.
+                            if let Some(target) = imp.nav_zoom_target.get() {
+                                let current = viewport.zoom_level();
+                                let next = current + (target - current) * 0.12;
+                                viewport.set_zoom_level(next);
+                                imp.last_set_zoom.set(Some(next));
+                            } else {
+                                imp.last_set_zoom.set(Some(viewport.zoom_level()));
+                            }
+
+                            let h_start = *imp.heading_anim_start.borrow();
+                            let h_from  = *imp.heading_from.borrow();
+                            let h_to    = *imp.heading_to.borrow();
+                            if let (Some(hs), Some(hf), Some(ht)) = (h_start, h_from, h_to) {
+                                let h_dur = imp.heading_anim_dur.get().max(0.05);
+                                let t_linear = (hs.elapsed().as_secs_f64() / h_dur).min(1.0);
+                                // Smoothstep ease-in-out: t²(3−2t) — feels natural for map rotation
+                                let ht_val = t_linear * t_linear * (3.0 - 2.0 * t_linear);
+                                // Interpolate shortest angular path
+                                let mut delta = ht - hf;
+                                if delta > 180.0 { delta -= 360.0; }
+                                if delta < -180.0 { delta += 360.0; }
+                                let heading = ((hf + delta * ht_val) + 360.0) % 360.0;
+                                viewport.set_rotation(-heading.to_radians());
+                            }
                         }
                     }
                 }
@@ -1515,6 +1584,13 @@ impl LociWindow {
             }
         });
     }
+}
+
+/// Target zoom for navigation: slower travel zooms in, faster travel zooms out.
+/// Roughly 17 when stopped, easing down to 15 at highway speed.
+fn nav_zoom_for_speed(meters_per_second: f64) -> f64 {
+    let kmh = (meters_per_second * 3.6).max(0.0);
+    (17.0 - kmh / 45.0).clamp(15.0, 17.0)
 }
 
 /// Maps a ferrostar maneuver type/modifier to the bundled symbolic icon name.

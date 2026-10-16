@@ -47,7 +47,9 @@ async fn open_location_stream() -> ashpd::Result<(LocationProxy, impl futures_ut
 /// receiver is dropped.  Heading is clockwise degrees from north (0 = north,
 /// 90 = east) or `None` when the portal reports it as unavailable.
 /// Async — run inside a tokio runtime.
-pub async fn stream_location(tx: std::sync::mpsc::Sender<(f64, f64, Option<f64>)>) {
+pub async fn stream_location(
+    tx: std::sync::mpsc::Sender<(f64, f64, Option<f64>, Option<f64>)>,
+) {
     match open_location_stream().await {
         Err(e) => glib::g_warning!("loci", "[location] portal error: {e}"),
         Ok((_proxy, mut stream)) => {
@@ -55,10 +57,11 @@ pub async fn stream_location(tx: std::sync::mpsc::Sender<(f64, f64, Option<f64>)
                 // GeoClue uses -1.0 for "unknown heading" (filtered to None by ashpd) and
                 // sometimes 360.0 as a second sentinel. Reject anything outside [0, 360).
                 let heading = location.heading().filter(|&h| h >= 0.0 && h < 360.0);
-                glib::g_debug!("loci", "[location] fix: {:.5}, {:.5}  acc={}m  heading={:?}",
+                let speed = location.speed().filter(|&s| s >= 0.0);
+                glib::g_debug!("loci", "[location] fix: {:.5}, {:.5}  acc={}m  heading={:?} speed={:?}",
                     location.latitude(), location.longitude(), location.accuracy(),
-                    heading);
-                if tx.send((location.latitude(), location.longitude(), heading)).is_err() {
+                    heading, speed);
+                if tx.send((location.latitude(), location.longitude(), heading, speed)).is_err() {
                     break;
                 }
             }
