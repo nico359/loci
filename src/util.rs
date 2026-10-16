@@ -51,12 +51,33 @@ pub(crate) fn capitalize(s: &str) -> String {
     }
 }
 
-/// Formats a distance in metres as metres (below 1 km) or kilometres.
-pub(crate) fn format_distance(meters: f64) -> String {
-    if meters >= 1000.0 {
-        format!("{:.1} km", meters / 1000.0)
-    } else {
-        format!("{} m", meters.round() as u32)
+/// Distance units used when formatting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Units {
+    #[default]
+    Metric,
+    Imperial,
+}
+
+/// Formats a distance in metres according to `units`.
+pub(crate) fn format_distance(meters: f64, units: Units) -> String {
+    match units {
+        Units::Metric => {
+            if meters >= 1000.0 {
+                format!("{:.1} km", meters / 1000.0)
+            } else {
+                format!("{} m", meters.round() as u32)
+            }
+        }
+        Units::Imperial => {
+            // Show feet below 1000 ft and miles above, as navigation UIs do.
+            let feet = meters * 3.280_839_895;
+            if feet < 1000.0 {
+                format!("{} ft", feet.round() as u32)
+            } else {
+                format!("{:.1} mi", meters / 1609.344)
+            }
+        }
     }
 }
 
@@ -101,9 +122,11 @@ mod tests {
 
     #[test]
     fn distance_formatting() {
-        assert_eq!(format_distance(0.4), "0 m");
-        assert_eq!(format_distance(500.0), "500 m");
-        assert_eq!(format_distance(1499.0), "1.5 km");
+        assert_eq!(format_distance(0.4, Units::Metric), "0 m");
+        assert_eq!(format_distance(500.0, Units::Metric), "500 m");
+        assert_eq!(format_distance(1499.0, Units::Metric), "1.5 km");
+        assert_eq!(format_distance(100.0, Units::Imperial), "328 ft");
+        assert_eq!(format_distance(1609.344, Units::Imperial), "1.0 mi");
     }
 
     #[test]

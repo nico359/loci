@@ -26,8 +26,9 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use crate::geocoding::PhotonFeature;
+use crate::settings;
 use crate::style::build_style_json;
-use crate::util::{capitalize, compute_bearing, format_distance, format_duration, haversine};
+use crate::util::{capitalize, compute_bearing, format_distance, format_duration, haversine, Units};
 
 /// A deviation detector that only checks the *current* route step (index 0 of remaining_steps).
 ///
@@ -204,6 +205,12 @@ mod imp {
 
         // Map source profile: "online" (OpenFreeMap) or "offline" (OSM Scout Server)
         pub map_profile: RefCell<String>,
+        // Distance units, refreshed from settings at startup and on change
+        pub units: std::cell::Cell<Units>,
+        // Totals of the route currently shown in the preview panel, kept so the
+        // labels can be reformatted when the units change.
+        pub preview_total_distance: std::cell::Cell<f64>,
+        pub preview_total_duration: std::cell::Cell<f64>,
         // Whether overlay layers have been added to the map (done once after first renderer)
         pub map_initialized: std::cell::Cell<bool>,
     }
@@ -227,6 +234,7 @@ mod imp {
     impl ObjectImpl for LociWindow {
         fn constructed(&self) {
             self.parent_constructed();
+            self.units.set(settings::units());
             self.obj().setup_actions();
             self.obj().setup_map();
             self.obj().setup_geocoding();
@@ -282,11 +290,24 @@ impl LociWindow {
             }
         });
 
+        // Remember the map position so the next launch opens where we left off.
+        self.connect_close_request(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| {
+                if let Some(viewport) = window.imp().map.viewport() {
+                    settings::set_last_position(viewport.latitude(), viewport.longitude());
+                    settings::set_last_zoom(viewport.zoom_level());
+                }
+                glib::Propagation::Proceed
+            }
+        ));
+
         self.start_map_source();
     }
 
     fn setup_actions(&self) {
-        let saved_profile = load_map_profile();
+        let saved_profile = settings::map_profile();
         *self.imp().map_profile.borrow_mut() = saved_profile.clone();
 
         let map_profile_action = gio::SimpleAction::new_stateful(
@@ -301,11 +322,46 @@ impl LociWindow {
                 let Some(profile) = param.and_then(|v| v.str()) else { return };
                 action.set_state(&profile.to_variant());
                 *window.imp().map_profile.borrow_mut() = profile.to_string();
-                save_map_profile(profile);
+                settings::set_map_profile(profile);
                 window.start_map_source();
             }
         ));
         self.add_action(&map_profile_action);
+
+        let units_preference = settings::units_preference();
+        let units_action = gio::SimpleAction::new_stateful(
+            "units",
+            Some(glib::VariantTy::STRING),
+            &units_preference.to_variant(),
+        );
+        units_action.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |action, param| {
+                let Some(preference) = param.and_then(|v| v.str()) else { return };
+                action.set_state(&preference.to_variant());
+                settings::set_units_preference(preference);
+                window.apply_units(settings::units());
+            }
+        ));
+        self.add_action(&units_action);
+    }
+
+    /// Store the resolved units and refresh the visible route preview labels.
+    fn apply_units(&self, units: Units) {
+        let imp = self.imp();
+        imp.units.set(units);
+        if imp.route_preview_revealer.reveals_child() {
+            Self::update_route_preview_labels(imp);
+        }
+    }
+
+    fn update_route_preview_labels(imp: &imp::LociWindow) {
+        let units = imp.units.get();
+        imp.route_distance_label
+            .set_text(&format_distance(imp.preview_total_distance.get(), units));
+        imp.route_time_label
+            .set_text(&format_duration(imp.preview_total_duration.get()));
     }
 
     /// Starts loading the map source matching the current profile.
@@ -377,7 +433,7 @@ impl LociWindow {
                             }
                         }
                         *window.imp().map_profile.borrow_mut() = "online".to_string();
-                        save_map_profile("online");
+                        settings::set_map_profile("online");
                         window.start_online_source();
                     }
                     return glib::ControlFlow::Break;
@@ -437,8 +493,9 @@ impl LociWindow {
                     imp.map_initialized.set(true);
 
                     let viewport = imp.map.viewport().expect("SimpleMap has no viewport");
-                    viewport.set_zoom_level(12.0);
-                    viewport.set_location(52.5200, 13.4050);
+                    let (lat, lon) = settings::last_position().unwrap_or((52.5200, 13.4050));
+                    viewport.set_zoom_level(settings::last_zoom());
+                    viewport.set_location(lat, lon);
 
                     let marker_layer = shumate::MarkerLayer::new(&viewport);
                     imp.map.add_overlay_layer(&marker_layer);
@@ -802,8 +859,9 @@ impl LociWindow {
                     let total_distance: f64 = route.steps.iter().map(|s| s.distance).sum();
                     let total_duration: f64 = route.steps.iter().map(|s| s.duration).sum();
 
-                    imp.route_distance_label.set_text(&format_distance(total_distance));
-                    imp.route_time_label.set_text(&format_duration(total_duration));
+                    imp.preview_total_distance.set(total_distance);
+                    imp.preview_total_duration.set(total_duration);
+                    Self::update_route_preview_labels(imp);
 
                     // Store for "Start" button
                     *imp.pending_route.borrow_mut() = Some(route);
@@ -1276,9 +1334,10 @@ impl LociWindow {
                         .or_else(|| lookahead_vi.and_then(|vi| vi.primary_content.maneuver_modifier)),
                 );
                 imp.nav_instruction_label.set_text(&text);
-                imp.nav_distance_label.set_text(&format_distance(progress.distance_to_next_maneuver));
+                let units = imp.units.get();
+                imp.nav_distance_label.set_text(&format_distance(progress.distance_to_next_maneuver, units));
                 imp.nav_maneuver_icon.set_icon_name(Some(icon));
-                imp.nav_remaining_distance_label.set_text(&format_distance(progress.distance_remaining));
+                imp.nav_remaining_distance_label.set_text(&format_distance(progress.distance_remaining, units));
                 imp.nav_remaining_time_label.set_text(&format_duration(progress.duration_remaining));
             }
             TripState::Complete { .. } => eprintln!("[nav] TripState::Complete"),
@@ -1460,26 +1519,6 @@ fn maneuver_icon(
         (_, Some(Mod::UTurn)) => "maps-direction-u-turn-right-symbolic",
         _ => "maps-direction-continue-symbolic",
     }
-}
-
-fn map_profile_path() -> std::path::PathBuf {
-    let mut path = glib::user_data_dir();
-    path.push("loci");
-    path.push("map_profile");
-    path
-}
-
-fn load_map_profile() -> String {
-    let raw = std::fs::read_to_string(map_profile_path()).unwrap_or_default();
-    if raw.trim() == "offline" { "offline".to_string() } else { "online".to_string() }
-}
-
-fn save_map_profile(profile: &str) {
-    let path = map_profile_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(path, profile);
 }
 
 /// Attach a Photon geocoding autocomplete popover to any `GtkEntry`-like widget.

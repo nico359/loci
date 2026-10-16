@@ -1,5 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist gettext-domain="loci">
 	<schema id="io.github.nico359.loci" path="/io/github/nico359/loci/">
+		<key name="map-profile" type="s">
+			<default>'online'</default>
+			<summary>Active map profile</summary>
+			<description>
+				Either "online" (OpenFreeMap tiles, OSRM routing, Photon search)
+				or "offline" (OSM Scout Server).
+			</description>
+		</key>
+		<key name="units" type="s">
+			<default>'auto'</default>
+			<summary>Units for distances</summary>
+			<description>
+				"metric" or "imperial"; "auto" picks based on the locale.
+			</description>
+		</key>
+		<key name="last-location" type="s">
+			<default>''</default>
+			<summary>Last viewed map position</summary>
+			<description>
+				"lat,lon" of the last map position, or empty when the map has
+				not been placed yet.
+			</description>
+		</key>
+		<key name="last-zoom" type="d">
+			<default>12.0</default>
+			<summary>Last map zoom level</summary>
+		</key>
 	</schema>
 </schemalist>

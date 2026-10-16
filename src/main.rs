@@ -23,6 +23,7 @@ mod config;
 mod geocoding;
 mod location;
 mod routing;
+mod settings;
 mod style;
 mod util;
 mod window;
