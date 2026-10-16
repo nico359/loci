@@ -291,17 +291,16 @@ impl LociWindow {
         });
 
         // Remember the map position so the next launch opens where we left off.
-        self.connect_close_request(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |_| {
+        let window_weak = self.downgrade();
+        self.connect_close_request(move |_| {
+            if let Some(window) = window_weak.upgrade() {
                 if let Some(viewport) = window.imp().map.viewport() {
                     settings::set_last_position(viewport.latitude(), viewport.longitude());
                     settings::set_last_zoom(viewport.zoom_level());
                 }
-                glib::Propagation::Proceed
             }
-        ));
+            glib::Propagation::Proceed
+        });
 
         self.start_map_source();
     }
