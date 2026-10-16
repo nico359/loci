@@ -909,15 +909,18 @@ impl LociWindow {
         use ferrostar::navigation_controller::models::{
             NavigationControllerConfig, WaypointAdvanceMode, CourseFiltering,
         };
-        use ferrostar::navigation_controller::step_advance::conditions::DistanceToEndOfStepCondition;
+        use ferrostar::navigation_controller::step_advance::conditions::{
+            DistanceEntryAndExitCondition, DistanceToEndOfStepCondition,
+        };
         use ferrostar::deviation_detection::RouteDeviationTracking;
         use ferrostar::models::{GeographicCoordinate, UserLocation};
         use std::sync::Arc;
 
-        let step_advance = Arc::new(DistanceToEndOfStepCondition {
-            distance: 25,
-            minimum_horizontal_accuracy: 50,
-        });
+        // Advance only after actually reaching and passing the maneuver, rather
+        // than up to 25 m early. Premature advancement switches the current step
+        // and makes the snapped position jump forward onto the next step's line
+        // (very visible at sharp turns and roundabouts).
+        let step_advance = Arc::new(DistanceEntryAndExitCondition::default());
         let config = NavigationControllerConfig {
             waypoint_advance: WaypointAdvanceMode::WaypointWithinRange(50.0),
             step_advance_condition: step_advance.clone(),
@@ -1089,10 +1092,7 @@ impl LociWindow {
                     let mut slot = reroute_result.lock().unwrap();
                     if let Some(new_route) = slot.take() {
                         drop(slot);
-                        let step_advance = Arc::new(DistanceToEndOfStepCondition {
-                            distance: 25,
-                            minimum_horizontal_accuracy: 50,
-                        });
+                        let step_advance = Arc::new(DistanceEntryAndExitCondition::default());
                         let new_config = NavigationControllerConfig {
                             waypoint_advance: WaypointAdvanceMode::WaypointWithinRange(50.0),
                             step_advance_condition: step_advance.clone(),
