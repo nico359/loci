@@ -66,7 +66,7 @@ pub fn search_with_profile(query: &str, profile: &str) -> Vec<PhotonFeature> {
 /// Search Photon (https://photon.komoot.io) and return up to 5 results.
 /// Blocking — call from a background thread.
 pub fn search(query: &str) -> Vec<PhotonFeature> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::routing::http_client();
     let response = client
         .get("https://photon.komoot.io/api/")
         .query(&[("q", query), ("limit", "5")])
@@ -86,7 +86,7 @@ pub fn search(query: &str) -> Vec<PhotonFeature> {
 /// Search OSM Scout Server's local geocoder and return up to 5 results.
 /// Blocking — call from a background thread.
 fn search_scout(query: &str) -> Vec<PhotonFeature> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::routing::http_client();
     let response = client
         .get("http://localhost:8553/v1/search")
         .query(&[("search", query), ("limit", "5")])

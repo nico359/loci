@@ -25,6 +25,27 @@ use ferrostar::models::{BoundingBox, GeographicCoordinate, ManeuverModifier, Man
 /// Base URL for the OSRM routing service.
 pub const DEFAULT_OSRM_BASE_URL: &str = "https://routing.openstreetmap.de";
 
+/// Shared blocking HTTP client used by every network call in the app.
+///
+/// Always sends a descriptive `User-Agent`: public endpoints (notably the
+/// FOSSGIS OSRM instance at routing.openstreetmap.de) reject anonymous requests
+/// with `403 Forbidden`. Reusing a single client also gives us connection
+/// pooling and a request timeout instead of a fresh TLS handshake per call.
+pub(crate) fn http_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .user_agent(concat!(
+                "loci/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/nico359/loci)"
+            ))
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("failed to build reqwest client")
+    })
+}
+
 /// Request a route from `origin` to `destination` using OSRM.
 ///
 /// `origin` and `destination` are `(lat, lon)` pairs.
@@ -47,7 +68,7 @@ pub fn get_route(
 
     eprintln!("[routing] GET {url}");
 
-    let client = reqwest::blocking::Client::new();
+    let client = http_client();
     let bytes = match client.get(&url).send() {
         Ok(resp) => {
             let status = resp.status();
@@ -295,7 +316,7 @@ pub fn get_route_valhalla(
 
     eprintln!("[routing/valhalla] POST http://localhost:8553/v2/route costing={costing}");
 
-    let client = reqwest::blocking::Client::new();
+    let client = http_client();
     let resp = match client
         .get("http://localhost:8553/v2/route")
         .query(&[("json", body.to_string())])
