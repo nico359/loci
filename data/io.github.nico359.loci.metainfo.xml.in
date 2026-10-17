@@ -14,6 +14,12 @@
 
   <icon type="stock">io.github.nico359.loci</icon>
 
+  <categories>
+    <category>GNOME</category>
+    <category>GTK</category>
+    <category>Utility</category>
+  </categories>
+
   <developer id="io.github.nico359">
     <name>nico359</name>
   </developer>
@@ -53,6 +59,20 @@
 
 
   <releases>
+        <release version="0.4.0" date="2026-10-17">
+      <description translate="no">
+        <p>Navigation, search and offline quality-of-life</p>
+        <ul>
+          <li>Speed-based dynamic zoom, and the map can now be panned while navigating</li>
+          <li>Search results are ranked by distance, online and offline</li>
+          <li>Recent places are offered when a search field is empty</li>
+          <li>Metric/imperial units, and the map reopens where you left it</li>
+          <li>Offline search now folds ß and finds nearby places</li>
+          <li>Lower memory use, less idle battery drain, and a single GPS stream</li>
+          <li>Updated to the GNOME 51 runtime and libshumate 1.7</li>
+        </ul>
+      </description>
+    </release>
         <release version="0.3.1" date="2026-06-17">
       <description translate="no">
         <p>Fixes for offline mode</p>

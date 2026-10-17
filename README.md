@@ -9,12 +9,15 @@ For informational purposes only. Do not use while driving. Navigation data may b
 ## Features so far
 
 -  Turn-by-turn navigation with maneuver instructions
+-  Speed-based dynamic zoom and a map that can be panned while navigating
 -  Routing via OSRM and Ferrostar (online mode)
--  Address search via Nominatim geocoding (online mode)
+-  Address search via Photon geocoding, ranked near your current position (online mode)
+-  Recent places history in the search fields
 -  Offline mode using [OSM Scout Server](https://github.com/rinigus/osmscout-server) (also available as Flatpak)
--  Map rotation following direction of travel (kind of)
+-  Map rotation following direction of travel, on and off the route
 -  Automatic rerouting when off-route
 -  Route snapping - position indicator follows the road
+-  Metric/imperial units and last-known map position
 -  Location via the XDG Location Portal (GeoClue)
 -  Screen idle inhibit during navigation
 -  Map rendering (vector) using libshumate like Gnome Maps
