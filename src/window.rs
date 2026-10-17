@@ -187,8 +187,9 @@ mod imp {
         // Remaining route geometry, cached so the render timer can project the
         // dot along the road instead of in a straight line.
         pub route_geometry: RefCell<Vec<(f64, f64)>>,
-        // Ring buffer of recent positions (up to 4) for vector-averaged heading
-        pub recent_positions: RefCell<Vec<(f64, f64)>>,
+        // Recent raw positions with timestamps, used to derive a stable travel
+        // heading when off route (where there is no route tangent to use).
+        pub recent_positions: RefCell<Vec<(f64, f64, std::time::Instant)>>,
         // Screen idle inhibit — held during navigation, dropped to release
         pub idle_inhibit: RefCell<Option<u32>>,
 
@@ -1188,23 +1189,15 @@ impl LociWindow {
                 };
                 push_extrap_fix(&imp, dot_pos.0, dot_pos.1);
 
+                // Direction of travel from raw positions. Off route there is no
+                // route tangent, and the platform heading (compass/COG) can be
+                // missing or unreliable, so this is the dependable source.
+                let travel_heading = update_travel_heading(&imp, lat, lon);
+
                 // Map rotation heading.
-                // On-route: use route-tangent from Ferrostar (zero noise, follows road curves).
-                // Off-route or no route heading: fall back to GPS COG or extrap-fix bearing.
-                let map_heading = route_heading.or_else(|| gps_heading).or_else(|| {
-                    let f0 = *imp.extrap_fix0.borrow();
-                    let f1 = *imp.extrap_fix1.borrow();
-                    if let (Some((lat0, lon0, _)), Some((lat1, lon1, _))) = (f0, f1) {
-                        let dist = haversine(lat0, lon0, lat1, lon1);
-                        if dist >= MIN_BEARING_DIST {
-                            Some(compute_bearing(lat0, lon0, lat1, lon1))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                });
+                // On-route: route tangent from Ferrostar (zero noise, follows roads).
+                // Off-route: travel bearing from recent positions, then platform heading.
+                let map_heading = route_heading.or(travel_heading).or(gps_heading);
                 if let Some(heading) = map_heading {
                     let diff = imp.heading_to.borrow().map(|cur| {
                         let d = (heading - cur).abs();
@@ -1648,6 +1641,33 @@ impl LociWindow {
         }
     }
 
+}
+
+/// Track recent raw positions and return a stable direction of travel once the
+/// user has moved far enough. Used for map rotation when off route, where there
+/// is no route tangent and the platform heading may be missing or unreliable.
+fn update_travel_heading(imp: &imp::LociWindow, lat: f64, lon: f64) -> Option<f64> {
+    const MIN_BASELINE_M: f64 = 15.0;
+    const MAX_AGE_S: f64 = 8.0;
+
+    let now = std::time::Instant::now();
+    let mut history = imp.recent_positions.borrow_mut();
+    history.push((lat, lon, now));
+
+    // Keep the history time-bounded so it cannot grow without limit.
+    while history
+        .first()
+        .is_some_and(|(_, _, t)| now.duration_since(*t).as_secs_f64() > MAX_AGE_S)
+    {
+        history.remove(0);
+    }
+
+    // Prefer the oldest point that is far enough away to give a stable bearing;
+    // this avoids the jitter of a bearing taken between two nearby fixes.
+    history
+        .iter()
+        .find(|(plat, plon, _)| haversine(*plat, *plon, lat, lon) >= MIN_BASELINE_M)
+        .map(|(plat, plon, _)| compute_bearing(*plat, *plon, lat, lon))
 }
 
 /// Advance `distance` metres along `polyline`, starting from the point on the
