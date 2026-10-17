@@ -96,7 +96,7 @@ pub fn search(
 ) -> Vec<PhotonFeature> {
     match profile {
         MapProfile::Online => geocoding::search(query, near),
-        MapProfile::Offline => geocoding::search_scout(query),
+        MapProfile::Offline => geocoding::search_scout(query, near),
     }
 }
 

@@ -99,28 +99,40 @@ pub fn search(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
 
 /// Search OSM Scout Server's local geocoder and return up to 5 results.
 /// Blocking — call from a background thread.
-pub(crate) fn search_scout(query: &str) -> Vec<PhotonFeature> {
+///
+/// Uses the v2 endpoint (geocoder-nlp), which parses free-form multi-word
+/// addresses better than v1, and biases results towards `near`.
+pub(crate) fn search_scout(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
     let client = crate::routing::http_client();
-    let response = client
-        .get("http://localhost:8553/v1/search")
-        .query(&[("search", query), ("limit", "5")])
-        .send();
 
-    let items: Vec<serde_json::Value> = response
-        .and_then(|r| r.json::<serde_json::Value>())
-        .ok()
-        .and_then(|v| {
-            // Scout Server wraps results under "results" key in some versions,
-            // or returns a bare array. Handle both.
-            if v.is_array() {
-                v.as_array().cloned()
-            } else {
-                v["results"].as_array().cloned()
+    let mut params: Vec<(&str, String)> = vec![
+        ("search", query.to_owned()),
+        ("limit", "6".to_owned()),
+    ];
+    if let Some((lat, lon)) = near {
+        params.push(("lat", lat.to_string()));
+        params.push(("lng", lon.to_string()));
+        params.push(("zoom", "16".to_owned()));
+        params.push(("importance", "0.75".to_owned()));
+    }
+
+    // Prefer v2; fall back to v1 on older servers or when v2 yields nothing.
+    let mut items = Vec::new();
+    for endpoint in [
+        "http://localhost:8553/v2/search",
+        "http://localhost:8553/v1/search",
+    ] {
+        if let Ok(response) = client.get(endpoint).query(&params).send() {
+            if let Ok(value) = response.json::<serde_json::Value>() {
+                items = scout_items(&value);
+                if !items.is_empty() {
+                    break;
+                }
             }
-        })
-        .unwrap_or_default();
+        }
+    }
 
-    items
+    let results = items
         .iter()
         .filter_map(|item| {
             let lat = item["lat"].as_f64()?;
@@ -130,7 +142,21 @@ pub(crate) fn search_scout(query: &str) -> Vec<PhotonFeature> {
             let subtitle = item["admin_region"].as_str().unwrap_or("").to_owned();
             Some(PhotonFeature { name, subtitle, lat, lon })
         })
-        .collect()
+        .collect();
+
+    dedup(results).into_iter().take(5).collect()
+}
+
+/// Extract the result list from either Scout response shape: a bare array,
+/// v2's `result`, or the older `results` key.
+fn scout_items(value: &serde_json::Value) -> Vec<serde_json::Value> {
+    if let Some(items) = value.as_array() {
+        items.clone()
+    } else if let Some(items) = value["result"].as_array() {
+        items.clone()
+    } else {
+        value["results"].as_array().cloned().unwrap_or_default()
+    }
 }
 
 /// Drop near-duplicate results that describe the same place. Photon frequently
