@@ -184,6 +184,9 @@ mod imp {
         // Feeds the single app-wide location stream into the navigation loop, so
         // navigating never opens a second GeoClue session.
         pub nav_fix_tx: RefCell<Option<std::sync::mpsc::Sender<(f64, f64, Option<f64>, Option<f64>)>>>,
+        // Remaining route geometry, cached so the render timer can project the
+        // dot along the road instead of in a straight line.
+        pub route_geometry: RefCell<Vec<(f64, f64)>>,
         // Ring buffer of recent positions (up to 4) for vector-averaged heading
         pub recent_positions: RefCell<Vec<(f64, f64)>>,
         // Screen idle inhibit — held during navigation, dropped to release
@@ -990,6 +993,7 @@ impl LociWindow {
         // Start the render timer for smooth dot movement and the follow camera.
         *imp.extrap_fix0.borrow_mut() = None;
         *imp.extrap_fix1.borrow_mut() = None;
+        imp.route_geometry.borrow_mut().clear();
         self.install_render_timer();
         *imp.heading_from.borrow_mut() = None;
         *imp.heading_to.borrow_mut() = None;
@@ -1152,18 +1156,34 @@ impl LociWindow {
                 // route line, so the dot would hang there instead of following the user.
                 use ferrostar::navigation_controller::models::TripState;
                 use ferrostar::deviation_detection::RouteDeviation;
-                let (dot_pos, route_heading) = if let TripState::Navigating { snapped_user_location, deviation, .. } = new_state.trip_state() {
+                let (dot_pos, route_heading) = if let TripState::Navigating { snapped_user_location, deviation, remaining_steps, .. } = new_state.trip_state() {
                     match deviation {
                         RouteDeviation::NoDeviation => {
                             let pos = (snapped_user_location.coordinates.lat, snapped_user_location.coordinates.lng);
                             // CourseFiltering::SnapToRoute gives us the route-tangent heading
                             // directly from Ferrostar — perfectly smooth, no GPS noise.
                             let heading = snapped_user_location.course_over_ground.map(|c| c.degrees as f64);
+                            // Cache the remaining route so the render timer can move
+                            // the dot along the road rather than cutting corners.
+                            let mut geometry: Vec<(f64, f64)> = Vec::new();
+                            for step in &remaining_steps {
+                                for c in &step.geometry {
+                                    let point = (c.lat, c.lng);
+                                    if geometry.last() != Some(&point) {
+                                        geometry.push(point);
+                                    }
+                                }
+                            }
+                            *imp.route_geometry.borrow_mut() = geometry;
                             (pos, heading)
                         }
-                        RouteDeviation::Deviation { .. } => ((lat, lon), None),
+                        RouteDeviation::Deviation { .. } => {
+                            imp.route_geometry.borrow_mut().clear();
+                            ((lat, lon), None)
+                        }
                     }
                 } else {
+                    imp.route_geometry.borrow_mut().clear();
                     ((lat, lon), None)
                 };
                 push_extrap_fix(&imp, dot_pos.0, dot_pos.1);
@@ -1348,6 +1368,7 @@ impl LociWindow {
         *imp.reroute_result.lock().unwrap() = None;
         self.remove_render_timer();
         *imp.nav_fix_tx.borrow_mut() = None;
+        imp.route_geometry.borrow_mut().clear();
         // Release screen idle inhibit
         if let Some(cookie) = imp.idle_inhibit.borrow_mut().take() {
             if let Some(app) = self.application() {
@@ -1532,14 +1553,25 @@ impl LociWindow {
                         let dt_between = (t1 - t0).as_secs_f64();
                         let dt_after   = t1.elapsed().as_secs_f64();
                         if dt_between > 0.05 && dt_between < 2.1 && dt_after < 2.0 {
-                            let vel_lat = (lat1 - lat0) / dt_between;
-                            let vel_lon = (lon1 - lon0) / dt_between;
-                            let elat = lat1 + vel_lat * dt_after;
-                            let elon = lon1 + vel_lon * dt_after;
-                            if haversine(lat1, lon1, elat, elon) < 100.0 {
-                                (elat, elon)
+                            let speed = haversine(lat0, lon0, lat1, lon1) / dt_between;
+                            let advance = (speed * dt_after).min(100.0);
+                            // During navigation, follow the cached route geometry so
+                            // the dot rounds corners instead of cutting across them.
+                            let geometry = imp.route_geometry.borrow();
+                            if geometry.len() >= 2 {
+                                advance_along_polyline(&geometry, (lat1, lon1), advance)
                             } else {
-                                (lat1, lon1)
+                                // No route geometry (not navigating, or off route):
+                                // fall back to a straight-line projection.
+                                let vel_lat = (lat1 - lat0) / dt_between;
+                                let vel_lon = (lon1 - lon0) / dt_between;
+                                let elat = lat1 + vel_lat * dt_after;
+                                let elon = lon1 + vel_lon * dt_after;
+                                if haversine(lat1, lon1, elat, elon) < 100.0 {
+                                    (elat, elon)
+                                } else {
+                                    (lat1, lon1)
+                                }
                             }
                         } else {
                             (lat1, lon1)
@@ -1616,6 +1648,66 @@ impl LociWindow {
         }
     }
 
+}
+
+/// Advance `distance` metres along `polyline`, starting from the point on the
+/// polyline nearest to `from`. Works in a local metric plane, which is accurate
+/// over the short spans used for position extrapolation.
+fn advance_along_polyline(polyline: &[(f64, f64)], from: (f64, f64), distance: f64) -> (f64, f64) {
+    if polyline.len() < 2 || distance <= 0.0 {
+        return from;
+    }
+
+    let (lat0, lon0) = from;
+    let m_per_deg_lat = 111_320.0;
+    let m_per_deg_lon = (111_320.0 * lat0.to_radians().cos()).max(1.0);
+    let to_xy = |p: (f64, f64)| ((p.1 - lon0) * m_per_deg_lon, (p.0 - lat0) * m_per_deg_lat);
+    let to_ll = |x: f64, y: f64| (lat0 + y / m_per_deg_lat, lon0 + x / m_per_deg_lon);
+
+    let pts: Vec<(f64, f64)> = polyline.iter().map(|&p| to_xy(p)).collect();
+
+    // Nearest segment to `from`, which is the origin in this local plane.
+    let mut best: Option<(f64, usize, f64)> = None;
+    for i in 0..pts.len() - 1 {
+        let (ax, ay) = pts[i];
+        let (bx, by) = pts[i + 1];
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            ((-ax * dx) + (-ay * dy)) / len2
+        } else {
+            0.0
+        }
+        .clamp(0.0, 1.0);
+        let (px, py) = (ax + dx * t, ay + dy * t);
+        let dist2 = px * px + py * py;
+        if best.map_or(true, |(bd, _, _)| dist2 < bd) {
+            best = Some((dist2, i, t));
+        }
+    }
+    let (_, seg, t) = best.unwrap();
+
+    let seg_len = {
+        let (ax, ay) = pts[seg];
+        let (bx, by) = pts[seg + 1];
+        (bx - ax).hypot(by - ay)
+    };
+
+    // Walk forward from the projected point by `distance`.
+    let mut remaining = distance + t * seg_len;
+    let mut i = seg;
+    while i < pts.len() - 1 {
+        let (ax, ay) = pts[i];
+        let (bx, by) = pts[i + 1];
+        let len = (bx - ax).hypot(by - ay);
+        if remaining <= len || i == pts.len() - 2 {
+            let frac = if len > 0.0 { (remaining / len).clamp(0.0, 1.0) } else { 0.0 };
+            return to_ll(ax + (bx - ax) * frac, ay + (by - ay) * frac);
+        }
+        remaining -= len;
+        i += 1;
+    }
+    *polyline.last().unwrap()
 }
 
 /// Target zoom for navigation: slower travel zooms in, faster travel zooms out.
