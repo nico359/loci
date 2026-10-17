@@ -100,14 +100,21 @@ pub fn search(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
 /// Search OSM Scout Server's local geocoder and return up to 5 results.
 /// Blocking — call from a background thread.
 ///
-/// Uses the v2 endpoint (geocoder-nlp), which parses free-form multi-word
-/// addresses better than v1, and biases results towards `near`.
+/// libosmscout's location search ignores the location-bias parameters (only
+/// Scout's geocoder-nlp backend uses them) and ranks globally, so we fetch a
+/// large candidate set and rank by distance ourselves. Its parser also does
+/// not fold the German sharp s, so `ß` is normalized to `ss`.
 pub(crate) fn search_scout(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
     let client = crate::routing::http_client();
 
+    let normalized = normalize_query(query);
+
+    // Enough candidates that nearby matches make the cut despite the global
+    // ranking (300 was the smallest limit that surfaced a ~2 km result in
+    // testing).
     let mut params: Vec<(&str, String)> = vec![
-        ("search", query.to_owned()),
-        ("limit", "6".to_owned()),
+        ("search", normalized),
+        ("limit", "300".to_owned()),
     ];
     if let Some((lat, lon)) = near {
         params.push(("lat", lat.to_string()));
@@ -132,7 +139,7 @@ pub(crate) fn search_scout(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonF
         }
     }
 
-    let results = items
+    let mut results: Vec<PhotonFeature> = items
         .iter()
         .filter_map(|item| {
             let lat = item["lat"].as_f64()?;
@@ -143,6 +150,15 @@ pub(crate) fn search_scout(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonF
             Some(PhotonFeature { name, subtitle, lat, lon })
         })
         .collect();
+
+    // Client-side distance ranking is the only bias available for libosmscout.
+    if let Some((lat, lon)) = near {
+        results.sort_by(|a, b| {
+            haversine(lat, lon, a.lat, a.lon)
+                .partial_cmp(&haversine(lat, lon, b.lat, b.lon))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
 
     dedup(results).into_iter().take(5).collect()
 }
@@ -156,6 +172,23 @@ fn scout_items(value: &serde_json::Value) -> Vec<serde_json::Value> {
         items.clone()
     } else {
         value["results"].as_array().cloned().unwrap_or_default()
+    }
+}
+
+/// libosmscout's search parser does not fold the German sharp s.
+fn normalize_query(query: &str) -> String {
+    query.replace('ß', "ss").replace('ẞ', "SS")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_folds_sharp_s() {
+        assert_eq!(normalize_query("Hauptstraße"), "Hauptstrasse");
+        assert_eq!(normalize_query("HAUPTSTRASSE"), "HAUPTSTRASSE");
+        assert_eq!(normalize_query("Straße 5"), "Strasse 5");
     }
 }
 
