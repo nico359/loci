@@ -33,11 +33,12 @@ For informational purposes only. Do not use while driving. Navigation data may b
 
 ## Credits
 
-Inspired by [Gnome Maps](https://apps.gnome.org/en/Maps/).
+- Inspired by [Gnome Maps](https://apps.gnome.org/en/Maps/)
+- [OSM Scout Server](https://github.com/rinigus/osmscout-server) by rinigus - this makes offline navigation possible in the first place
 
 ## AI Disclosure
 
-This application was built with the assistance of AI (GitHub Copilot CLI, Claude).
+This application was built with the assistance of AI (GitHub Copilot CLI with Claude and OpenCode with DeepSeek).
 
 ## Building
 
