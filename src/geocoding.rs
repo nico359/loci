@@ -106,34 +106,32 @@ pub fn search(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
 /// not fold the German sharp s, so `ß` is normalized to `ss`.
 pub(crate) fn search_scout(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
     let client = crate::routing::http_client();
-
     let normalized = normalize_query(query);
 
-    // Enough candidates that nearby matches make the cut despite the global
-    // ranking (300 was the smallest limit that surfaced a ~2 km result in
-    // testing).
-    let mut params: Vec<(&str, String)> = vec![
-        ("search", normalized),
-        ("limit", "300".to_owned()),
-    ];
-    if let Some((lat, lon)) = near {
-        params.push(("lat", lat.to_string()));
-        params.push(("lng", lon.to_string()));
-        params.push(("zoom", "16".to_owned()));
-        params.push(("importance", "0.75".to_owned()));
-    }
+    // Scout ranks globally and truncates to `limit`, so the nearest match can
+    // sit beyond the first page: "Burger King" found its nearest at 39 km with
+    // 300 results, but at 15 km once the full match set was requested. Start
+    // with a moderate page and widen only when the page was truncated and
+    // nothing is close by, so common local queries stay fast.
+    const PAGE: usize = 600;
+    const WIDE: usize = 2000;
+    const CLOSE_M: f64 = 5_000.0;
 
-    // Prefer v2; fall back to v1 on older servers or when v2 yields nothing.
-    let mut items = Vec::new();
-    for endpoint in [
-        "http://localhost:8553/v2/search",
-        "http://localhost:8553/v1/search",
-    ] {
-        if let Ok(response) = client.get(endpoint).query(&params).send() {
-            if let Ok(value) = response.json::<serde_json::Value>() {
-                items = scout_items(&value);
-                if !items.is_empty() {
-                    break;
+    let mut items = scout_fetch(client, &normalized, near, PAGE);
+    if let Some((lat, lon)) = near {
+        if items.len() >= PAGE {
+            let nearest = items
+                .iter()
+                .filter_map(|item| {
+                    let ilat = item["lat"].as_f64()?;
+                    let ilon = item["lng"].as_f64()?;
+                    Some(haversine(lat, lon, ilat, ilon))
+                })
+                .fold(f64::INFINITY, f64::min);
+            if nearest > CLOSE_M {
+                let wide = scout_fetch(client, &normalized, near, WIDE);
+                if wide.len() > items.len() {
+                    items = wide;
                 }
             }
         }
@@ -161,6 +159,40 @@ pub(crate) fn search_scout(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonF
     }
 
     dedup(results).into_iter().take(5).collect()
+}
+
+/// Fetch a Scout search page, preferring v2 and falling back to v1.
+fn scout_fetch(
+    client: &reqwest::blocking::Client,
+    query: &str,
+    near: Option<(f64, f64)>,
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    let mut params: Vec<(&str, String)> = vec![
+        ("search", query.to_owned()),
+        ("limit", limit.to_string()),
+    ];
+    if let Some((lat, lon)) = near {
+        params.push(("lat", lat.to_string()));
+        params.push(("lng", lon.to_string()));
+        params.push(("zoom", "16".to_owned()));
+        params.push(("importance", "0.75".to_owned()));
+    }
+
+    for endpoint in [
+        "http://localhost:8553/v2/search",
+        "http://localhost:8553/v1/search",
+    ] {
+        if let Ok(response) = client.get(endpoint).query(&params).send() {
+            if let Ok(value) = response.json::<serde_json::Value>() {
+                let items = scout_items(&value);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// Extract the result list from either Scout response shape: a bare array,
