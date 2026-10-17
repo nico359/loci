@@ -79,9 +79,8 @@ pub(crate) fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
             // --- Buildings ---
             {"id": "building", "type": "fill",
              "source": "openmaptiles", "source-layer": "building",
-             "minzoom": 15,
-             "paint": {"fill-color": "#dbd5cc",
-                       "fill-outline-color": "#c0b8b0"}},
+             "minzoom": 16,
+             "paint": {"fill-color": "#dbd5cc"}},
             // --- Roads ---
             {"id": "road-path", "type": "line",
              "source": "openmaptiles", "source-layer": "transportation",
@@ -159,17 +158,6 @@ pub(crate) fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
              "paint": {"text-color": "#555",
                        "text-halo-color": "#fff",
                        "text-halo-width": 1}},
-            {"id": "housenumber", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "housenumber",
-             "minzoom": 17,
-             "layout": {
-                 "text-field": ["get", "housenumber"],
-                 "text-size": 10,
-                 "text-font": ["Noto Sans Regular"]
-             },
-             "paint": {"text-color": "#888",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1}},
             // Important POIs (rank 1-2: stations, hospitals, airports) from zoom 13
             {"id": "poi-important", "type": "symbol",
              "source": "openmaptiles", "source-layer": "poi",
@@ -202,23 +190,7 @@ pub(crate) fn build_style_json(tile_url: &str, glyph_url: &str) -> String {
              "paint": {"text-color": "#555",
                        "text-halo-color": "#fff",
                        "text-halo-width": 1}},
-            // Named POIs at street level (z16+). Capped by rank to keep the
-            // decoded symbol data per tile in check.
-            {"id": "poi-detail", "type": "symbol",
-             "source": "openmaptiles", "source-layer": "poi",
-             "minzoom": 16,
-             "filter": ["<=", "rank", 10],
-             "layout": {
-                 "text-field": ["get", "name"],
-                 "text-size": 10,
-                 "text-font": ["Noto Sans Regular"],
-                 "text-anchor": "top",
-                 "text-offset": [0, 0.4],
-                 "text-max-width": 6
-             },
-             "paint": {"text-color": "#666",
-                       "text-halo-color": "#fff",
-                       "text-halo-width": 1}},
+
             {"id": "place-suburb", "type": "symbol",
              "source": "openmaptiles", "source-layer": "place",
              "filter": ["in", "class", "suburb", "quarter", "neighbourhood"],
