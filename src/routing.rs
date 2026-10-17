@@ -337,20 +337,6 @@ pub fn get_route_valhalla(
     parse_valhalla_response(&bytes)
 }
 
-/// Dispatcher: selects OSRM or Valhalla based on profile.
-pub fn get_route_with_source(
-    origin: (f64, f64),
-    destination: (f64, f64),
-    map_profile: &str,
-    route_profile: &str,
-) -> Option<Route> {
-    if map_profile == "offline" {
-        get_route_valhalla(origin, destination, route_profile)
-    } else {
-        get_route(origin, destination, DEFAULT_OSRM_BASE_URL, route_profile)
-    }
-}
-
 fn parse_valhalla_response(bytes: &[u8]) -> Option<Route> {
     let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let trip = &json["trip"];

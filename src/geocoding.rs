@@ -70,26 +70,6 @@ impl PhotonFeature {
     }
 }
 
-/// Dispatch to the right geocoder depending on the current map profile.
-/// Blocking — call from a background thread.
-///
-/// `near` is an optional location bias (the user's current position), used to
-/// prefer results around them over globally better-ranked matches.
-pub fn search_with_profile(
-    query: &str,
-    profile: &str,
-    near: Option<(f64, f64)>,
-) -> Vec<PhotonFeature> {
-    if profile == "offline" {
-        // TODO: pass the location bias once Scout's search parameters are
-        // confirmed; offline search is being revisited separately.
-        let _ = near;
-        search_scout(query)
-    } else {
-        search(query, near)
-    }
-}
-
 /// Search Photon (https://photon.komoot.io) and return up to 5 results.
 /// Blocking — call from a background thread.
 pub fn search(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
@@ -119,7 +99,7 @@ pub fn search(query: &str, near: Option<(f64, f64)>) -> Vec<PhotonFeature> {
 
 /// Search OSM Scout Server's local geocoder and return up to 5 results.
 /// Blocking — call from a background thread.
-fn search_scout(query: &str) -> Vec<PhotonFeature> {
+pub(crate) fn search_scout(query: &str) -> Vec<PhotonFeature> {
     let client = crate::routing::http_client();
     let response = client
         .get("http://localhost:8553/v1/search")

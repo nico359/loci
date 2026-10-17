@@ -25,6 +25,7 @@ mod history;
 mod location;
 mod routing;
 mod settings;
+mod sources;
 mod style;
 mod util;
 mod window;

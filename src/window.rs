@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::geocoding::PhotonFeature;
 use crate::settings;
+use crate::sources::{self, MapProfile};
 use crate::style::build_style_json;
 use crate::util::{capitalize, compute_bearing, format_distance, format_duration, haversine, Units};
 
@@ -221,8 +222,8 @@ mod imp {
         pub tapped_place_coords: RefCell<Option<(f64, f64)>>,
         pub tapped_place_name: RefCell<String>,
 
-        // Map source profile: "online" (OpenFreeMap) or "offline" (OSM Scout Server)
-        pub map_profile: RefCell<String>,
+        // Active backend set: online services or the offline Scout Server.
+        pub map_profile: RefCell<MapProfile>,
         // Distance units, refreshed from settings at startup and on change
         pub units: std::cell::Cell<Units>,
         // Totals of the route currently shown in the preview panel, kept so the
@@ -325,20 +326,21 @@ impl LociWindow {
 
     fn setup_actions(&self) {
         let saved_profile = settings::map_profile();
-        *self.imp().map_profile.borrow_mut() = saved_profile.clone();
+        *self.imp().map_profile.borrow_mut() = saved_profile;
 
         let map_profile_action = gio::SimpleAction::new_stateful(
             "map-profile",
             Some(glib::VariantTy::STRING),
-            &saved_profile.to_variant(),
+            &saved_profile.setting_value().to_variant(),
         );
         map_profile_action.connect_activate(glib::clone!(
             #[weak(rename_to = window)]
             self,
             move |action, param| {
-                let Some(profile) = param.and_then(|v| v.str()) else { return };
-                action.set_state(&profile.to_variant());
-                *window.imp().map_profile.borrow_mut() = profile.to_string();
+                let Some(value) = param.and_then(|v| v.str()) else { return };
+                let profile = MapProfile::from_setting(value);
+                action.set_state(&profile.setting_value().to_variant());
+                *window.imp().map_profile.borrow_mut() = profile;
                 settings::set_map_profile(profile);
                 window.start_map_source();
             }
@@ -383,8 +385,8 @@ impl LociWindow {
 
     /// Starts loading the map source matching the current profile.
     fn start_map_source(&self) {
-        let profile = self.imp().map_profile.borrow().clone();
-        if profile == "offline" {
+        let profile = *self.imp().map_profile.borrow();
+        if profile.is_offline() {
             self.activate_scout_then_apply();
         } else {
             self.start_online_source();
@@ -437,8 +439,8 @@ impl LociWindow {
                 if let Some(ok) = result.lock().unwrap().take() {
                     if ok {
                         let json = build_style_json(
-                            "http://localhost:8553/v1/mbgl/tile?z={z}&x={x}&y={y}",
-                            "http://localhost:8553/v1/mbgl/glyphs?stack={fontstack}&range={range}",
+                            sources::OFFLINE_TILE_URL,
+                            sources::OFFLINE_GLYPH_URL,
                         );
                         window.apply_renderer(json);
                     } else {
@@ -446,11 +448,11 @@ impl LociWindow {
                         // Revert menu selection back to online
                         if let Some(action) = window.lookup_action("map-profile") {
                             if let Some(a) = action.downcast_ref::<gio::SimpleAction>() {
-                                a.set_state(&"online".to_variant());
+                                a.set_state(&MapProfile::Online.setting_value().to_variant());
                             }
                         }
-                        *window.imp().map_profile.borrow_mut() = "online".to_string();
-                        settings::set_map_profile("online");
+                        *window.imp().map_profile.borrow_mut() = MapProfile::Online;
+                        settings::set_map_profile(MapProfile::Online);
                         window.start_online_source();
                     }
                     return glib::ControlFlow::Break;
@@ -470,25 +472,22 @@ impl LociWindow {
         let style_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let slot_writer = Arc::clone(&style_slot);
         std::thread::spawn(move || {
-            let tile_url = reqwest::blocking::get("https://tiles.openfreemap.org/planet")
+            let tile_url = reqwest::blocking::get(sources::ONLINE_TILEJSON_URL)
                 .and_then(|r| r.json::<serde_json::Value>())
                 .ok()
                 .and_then(|j| j["tiles"][0].as_str().map(|s| s.to_owned()))
                 .unwrap_or_else(|| {
                     glib::g_debug!("loci", "[tiles] TileJSON fetch failed, using fallback");
-                    "https://tileserver.gnome.org/data/v3/{z}/{x}/{y}.pbf".to_owned()
+                    sources::ONLINE_TILE_FALLBACK.to_owned()
                 });
-            let style = build_style_json(
-                &tile_url,
-                "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-            );
+            let style = build_style_json(&tile_url, sources::ONLINE_GLYPH_URL);
             *slot_writer.lock().unwrap() = Some(style);
         });
 
         let window = self.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
             // Cancel if the user switched to offline before the fetch completed.
-            if window.imp().map_profile.borrow().as_str() != "online" {
+            if *window.imp().map_profile.borrow() != MapProfile::Online {
                 return glib::ControlFlow::Break;
             }
             if let Some(json) = style_slot.lock().unwrap().take() {
@@ -643,9 +642,9 @@ impl LociWindow {
                         .upgrade()
                         .map(|w| {
                             let imp = w.imp();
-                            (imp.map_profile.borrow().clone(), *imp.current_location.borrow())
+                            (*imp.map_profile.borrow(), *imp.current_location.borrow())
                         })
-                        .unwrap_or_else(|| ("online".to_string(), None))
+                        .unwrap_or_else(|| (MapProfile::Online, None))
                 }
             },
             {
@@ -724,9 +723,9 @@ impl LociWindow {
                         .upgrade()
                         .map(|w| {
                             let imp = w.imp();
-                            (imp.map_profile.borrow().clone(), *imp.current_location.borrow())
+                            (*imp.map_profile.borrow(), *imp.current_location.borrow())
                         })
-                        .unwrap_or_else(|| ("online".to_string(), None))
+                        .unwrap_or_else(|| (MapProfile::Online, None))
                 }
             },
             {
@@ -756,9 +755,9 @@ impl LociWindow {
                         .upgrade()
                         .map(|w| {
                             let imp = w.imp();
-                            (imp.map_profile.borrow().clone(), *imp.current_location.borrow())
+                            (*imp.map_profile.borrow(), *imp.current_location.borrow())
                         })
-                        .unwrap_or_else(|| ("online".to_string(), None))
+                        .unwrap_or_else(|| (MapProfile::Online, None))
                 }
             },
             {
@@ -860,12 +859,12 @@ impl LociWindow {
         imp.route_preview_revealer.set_reveal_child(true);
 
         let profile = imp.current_profile.borrow().clone();
-        let map_profile = imp.map_profile.borrow().clone();
+        let map_profile = *imp.map_profile.borrow();
         let (tx, rx) = std::sync::mpsc::channel::<ferrostar::models::Route>();
         let rx = Arc::new(Mutex::new(rx));
 
         std::thread::spawn(move || {
-            match crate::routing::get_route_with_source(origin, destination, &map_profile, &profile) {
+            match crate::sources::route(map_profile, origin, destination, &profile) {
                 Some(route) => { let _ = tx.send(route); }
                 None => glib::g_warning!("loci", "Routing request failed"),
             }
@@ -1242,9 +1241,9 @@ impl LociWindow {
                             let rr = reroute_result.clone();
                             let from = (lat, lon);
                             let profile = imp.current_profile.borrow().clone();
-                            let map_profile = imp.map_profile.borrow().clone();
+                            let map_profile = *imp.map_profile.borrow();
                             std::thread::spawn(move || {
-                                match crate::routing::get_route_with_source(from, dest, &map_profile, &profile) {
+                                match crate::sources::route(map_profile, from, dest, &profile) {
                                     Some(route) => { *rr.lock().unwrap() = Some(route); }
                                     None => glib::g_warning!("loci", "[nav] reroute request failed"),
                                 }
@@ -1795,7 +1794,7 @@ where
         + Clone
         + 'static,
     F: Fn(PhotonFeature) + Clone + 'static,
-    P: Fn() -> (String, Option<(f64, f64)>) + Clone + 'static,
+    P: Fn() -> (MapProfile, Option<(f64, f64)>) + Clone + 'static,
 {
     let list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -1937,7 +1936,7 @@ where
             let tx = tx.clone();
             let (profile, near) = get_profile();
             std::thread::spawn(move || {
-                let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile, near));
+                let _ = tx.send(crate::sources::search(profile, &query, near));
             });
         }
     });
@@ -1979,7 +1978,7 @@ where
                 let tx = tx.clone();
                 let (profile, near) = get_profile();
                 std::thread::spawn(move || {
-                    let _ = tx.send(crate::geocoding::search_with_profile(&query, &profile, near));
+                    let _ = tx.send(crate::sources::search(profile, &query, near));
                 });
             });
         }

@@ -26,6 +26,7 @@
 use gtk::gio;
 use gtk::prelude::*;
 
+use crate::sources::MapProfile;
 use crate::util::Units;
 
 const APP_ID: &str = "io.github.nico359.loci";
@@ -34,17 +35,13 @@ fn settings() -> gio::Settings {
     gio::Settings::new(APP_ID)
 }
 
-/// The persisted map profile, either `"online"` or `"offline"`.
-pub(crate) fn map_profile() -> String {
-    if settings().string("map-profile").as_str() == "offline" {
-        "offline".to_string()
-    } else {
-        "online".to_string()
-    }
+/// The persisted map profile.
+pub(crate) fn map_profile() -> MapProfile {
+    MapProfile::from_setting(settings().string("map-profile").as_str())
 }
 
-pub(crate) fn set_map_profile(profile: &str) {
-    let _ = settings().set_string("map-profile", profile);
+pub(crate) fn set_map_profile(profile: MapProfile) {
+    let _ = settings().set_string("map-profile", profile.setting_value());
 }
 
 /// The last viewed map position as `(lat, lon)`, if one was ever stored.
